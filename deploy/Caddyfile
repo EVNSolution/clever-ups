@@ -2,6 +2,8 @@
 # UPS_SITE is the address (the Elastic IP, or localhost for a local run). UPS_TLS is "acme" or "internal".
 {
 	admin off
+	# Browsers send no server name (SNI) when the address is an IP, so Caddy must know which certificate to use.
+	default_sni {$UPS_SITE}
 }
 
 (tls-acme) {
