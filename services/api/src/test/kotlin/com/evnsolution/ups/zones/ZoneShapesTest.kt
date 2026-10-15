@@ -57,10 +57,14 @@ class ZoneShapesTest {
             "test",
             LocalDate.parse("2026-07-01"),
         )
-        zones = ZoneShapes(jdbc, BoundaryReader(jdbc), Clock.systemUTC())
+        zones = ZoneShapes(jdbc, BoundaryReader(jdbc), Clock.systemUTC(), transactions)
     }
 
     private fun cleanUp() {
+        jdbc.sql(
+            "DELETE FROM driver_zone WHERE driver_id IN (SELECT driver_id FROM driver WHERE center_code = 'ZTEST')",
+        ).update()
+        jdbc.sql("DELETE FROM driver WHERE center_code = 'ZTEST'").update()
         jdbc.sql("DELETE FROM zone WHERE center_code = 'ZTEST' AND parent_zone_id IS NOT NULL").update()
         jdbc.sql("DELETE FROM zone WHERE center_code = 'ZTEST'").update()
         jdbc.sql("DELETE FROM center WHERE center_code = 'ZTEST'").update()
@@ -107,5 +111,27 @@ class ZoneShapesTest {
         assertThrows(ZoneInvalid::class.java) { zones.reshape(first.id, actor, ShapeIn(listOf("NOPE"))) }
         zones.reshape(first.id, actor, ShapeIn(listOf("Z11")))
         assertEquals(null, zones.reshape(first.id, actor, ShapeIn()).shape)
+    }
+
+    private fun mainZone(): String? =
+        jdbc.sql("SELECT main_zone_id FROM driver WHERE driver_code = '7001' AND center_code = 'ZTEST'")
+            .query { rs, _ -> rs.getString(1)?.trim() }.list().firstOrNull()
+
+    private fun serving(zoneId: String): Int =
+        jdbc.sql("SELECT COUNT(*) FROM driver_zone WHERE zone_id = :z").param("z", zoneId)
+            .query(Int::class.java).single()
+
+    @Test
+    fun `a zone gets one driver, who takes it as main zone when the driver has none`() {
+        jdbc.sql("INSERT INTO driver (driver_id, center_code, driver_code) VALUES (:id, 'ZTEST', '7001')")
+            .param("id", "d".repeat(36)).update()
+        val zone = zones.create(ZoneIn("ZTEST", "분당"))
+        zones.assignDriver(zone.id, "7001")
+        assertEquals(zone.id, mainZone())
+        assertEquals(1, serving(zone.id))
+        zones.assignDriver(zone.id, null)
+        assertEquals(0, serving(zone.id))
+        assertEquals(null, mainZone())
+        assertThrows(ZoneInvalid::class.java) { zones.assignDriver(zone.id, "NOPE") }
     }
 }

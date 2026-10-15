@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpStatus
 import org.springframework.jdbc.core.simple.JdbcClient
+import org.springframework.transaction.support.TransactionTemplate
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -28,8 +29,12 @@ import javax.sql.DataSource
 @ConditionalOnProperty("ups.db.url")
 class ZoneConfig {
     @Bean
-    fun zoneShapes(dataSource: DataSource, boundaries: BoundaryReader, clock: Clock) =
-        ZoneShapes(JdbcClient.create(dataSource), boundaries, clock)
+    fun zoneShapes(
+        dataSource: DataSource,
+        boundaries: BoundaryReader,
+        clock: Clock,
+        transactions: TransactionTemplate,
+    ) = ZoneShapes(JdbcClient.create(dataSource), boundaries, clock, transactions)
 }
 
 /**
@@ -55,6 +60,17 @@ class ZoneController(private val shapes: ObjectProvider<ZoneShapes>, private val
         val center = service.centerOf(id)
         if (center == null || !mine(center)) throw ResponseStatusException(HttpStatus.NOT_FOUND, "no zone")
         return rules { service.reshape(id, account, body) }
+    }
+
+    /** Sets the zone's 담당 기사. Administrator or owner, for a zone of the person's centers. */
+    @PutMapping("/{id}/driver")
+    fun assignDriver(@PathVariable id: String, @RequestBody body: ZoneDriverIn, request: HttpServletRequest): ZoneOut {
+        admin(request)
+        val service = service(true)
+        val center = service.centerOf(id)
+        if (center == null || !mine(center)) throw ResponseStatusException(HttpStatus.NOT_FOUND, "no zone")
+        rules { service.assignDriver(id, body.driverId?.trim()?.ifEmpty { null }) }
+        return service.list(center).single { it.id == id }
     }
 
     private fun <T> rules(action: () -> T): T =

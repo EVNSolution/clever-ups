@@ -6,6 +6,7 @@ import org.locationtech.jts.geom.Geometry
 import org.locationtech.jts.operation.union.UnaryUnionOp
 import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.simple.JdbcClient
+import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
 import java.time.Clock
@@ -21,6 +22,9 @@ data class ZoneIn(val centerId: String = "", val name: String = "", val parentId
 /** The new shape: the union of these boundaries, or a drawn polygon. Neither clears the shape. */
 data class ShapeIn(val boundaryCodes: List<String> = emptyList(), val polygon: JsonNode? = null)
 
+/** The driver who serves a zone, by DRIVER ID code; null leaves the zone without one. */
+data class ZoneDriverIn(val driverId: String? = null)
+
 /** A request the zone rules refuse: 400. */
 class ZoneInvalid(message: String) : RuntimeException(message)
 
@@ -35,6 +39,7 @@ class ZoneShapes(
     private val jdbc: JdbcClient,
     private val boundaries: BoundaryReader,
     private val clock: Clock,
+    private val transactions: TransactionTemplate,
 ) {
     private val mapper = JsonMapper.builder().build()
 
@@ -99,6 +104,29 @@ class ZoneShapes(
             .param("by", accountId).param("at", OffsetDateTime.now(clock)).param("id", zoneId)
             .update()
         return out(rows("zone_id = :v", zoneId).single())
+    }
+
+    /**
+     * Makes [driverCode] the one driver of the zone (its 담당 기사), or leaves the zone without one. The zone
+     * becomes the driver's main zone when the driver has none. Daily changes are made on 배차, not here.
+     */
+    fun assignDriver(zoneId: String, driverCode: String?) {
+        val zone = rows("zone_id = :v", zoneId).single()
+        val driver = driverCode?.let { code ->
+            jdbc.sql("SELECT driver_id FROM driver WHERE center_code = :c AND driver_code = :d")
+                .param("c", zone.center).param("d", code).query(String::class.java).optional()
+                .orElseThrow { ZoneInvalid("the center has no driver $code") }
+        }
+        transactions.executeWithoutResult {
+            jdbc.sql("UPDATE driver SET main_zone_id = NULL WHERE main_zone_id = :z").param("z", zoneId).update()
+            jdbc.sql("DELETE FROM driver_zone WHERE zone_id = :z").param("z", zoneId).update()
+            if (driver != null) {
+                jdbc.sql("INSERT INTO driver_zone (driver_id, zone_id) VALUES (:d, :z)")
+                    .param("d", driver).param("z", zoneId).update()
+                jdbc.sql("UPDATE driver SET main_zone_id = :z WHERE driver_id = :d AND main_zone_id IS NULL")
+                    .param("z", zoneId).param("d", driver).update()
+            }
+        }
     }
 
     private fun drawn(input: ShapeIn): Geometry? =

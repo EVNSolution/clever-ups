@@ -45,6 +45,45 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Driver"
+    post:
+      operationId: createDriver
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Register a driver of a center (administrator or owner)
+      description: Only the DRIVER ID code is kept, never a name or a phone number.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [centerId, driverId]
+              properties:
+                centerId: {type: string}
+                driverId: {type: string, pattern: "^[A-Za-z0-9_-]{1,30}$"}
+      responses:
+        "200":
+          description: The driver as registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [centerId, driverId]
+                properties:
+                  centerId: {type: string}
+                  driverId: {type: string}
+        "400":
+          description: A code that is not 1..30 letters, digits, - or _.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "409":
+          description: The center already has this driver.
   /api/orders:
     get:
       operationId: listOrders
@@ -327,6 +366,45 @@ paths:
         "403": {$ref: "#/components/responses/NoAccess"}
         "409":
           description: The center already has a zone with this name.
+  /api/zones/{id}/driver:
+    put:
+      operationId: putZoneDriver
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Set the driver who serves a zone (administrator or owner)
+      description: >-
+        The driver becomes the zone's only 담당 기사, and takes the zone as main zone when the driver has none.
+        A null driverId leaves the zone without one. A zone of a center the person does not have answers 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                driverId: {type: [string, "null"], description: DRIVER ID code of the zone's center.}
+      responses:
+        "200":
+          description: The zone.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Zone"}
+        "400":
+          description: The center has no driver with this code.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: No zone with this ID in the person's centers.
   /api/zones/{id}/shape:
     put:
       operationId: putZoneShape
@@ -1523,6 +1601,80 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Center"
+    post:
+      operationId: createCenter
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Make a center (owner only)
+      description: The owner sees it at once and gives it to people when approving them.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                id: {type: string, pattern: "^[A-Za-z0-9]{3,12}$", description: "LOCATION NAME code, such as KRSNA. Stored in capitals."}
+                name: {type: string, minLength: 1, maxLength: 200}
+                depotAddress: {type: string, maxLength: 200, description: Korean address of the depot; routes start there.}
+      responses:
+        "200":
+          description: The new center.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Center"}
+        "400":
+          description: A code that is not 3..12 letters or digits, or no name.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "409":
+          description: The code is taken.
+  /api/centers/{id}:
+    put:
+      operationId: updateCenter
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Change a center's name and depot address (owner only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                id: {type: string, pattern: "^[A-Za-z0-9]{3,12}$", description: "LOCATION NAME code, such as KRSNA. Stored in capitals."}
+                name: {type: string, minLength: 1, maxLength: 200}
+                depotAddress: {type: string, maxLength: 200, description: Korean address of the depot; routes start there.}
+      responses:
+        "200":
+          description: The center as changed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Center"}
+        "400":
+          description: No name, or a value too long.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: No such center.
 components:
   securitySchemes:
     userSession:

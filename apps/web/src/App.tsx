@@ -42,12 +42,14 @@ import { ZonesView, zoneDetail } from "./views/ZonesView";
 import { listZones } from "./api/zones";
 import { LoginView } from "./views/LoginView";
 import { OrderSheet } from "./views/OrderSheet";
+import { CentersView } from "./views/CentersView";
+import { DriverAdd } from "./views/DriverAdd";
 import { useZoneEditor } from "./views/ZoneEditor";
 import { ORDER_FILTERS, OrdersView, orderDetail, type OrderRow } from "./views/OrdersView";
 
 type TabId = "drivers" | "orders" | "zones";
 type MapViewMode = "zones" | "orders";
-type MenuId = "prep" | "dispatch" | "history" | "monitor" | "approvals";
+type MenuId = "prep" | "dispatch" | "history" | "monitor" | "approvals" | "centers";
 /** What the sidebar shows: one of the prep tabs, or the dispatch list. Each keeps its own selection. */
 type PaneId = TabId | "dispatch" | "history" | "monitor";
 type Selection = Record<PaneId, string | null>;
@@ -272,7 +274,8 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
   }, []);
   // The rail picks what the sidebar shows. Approvals exist for the owner only; anyone else stays on prep.
   const [menu, setMenu] = useState<MenuId>("prep");
-  const current: MenuId = menu === "approvals" && !canDecide ? "prep" : menu;
+  const current: MenuId = (menu === "approvals" || menu === "centers") && !canDecide ? "prep" : menu;
+  const onPage = current === "approvals" || current === "centers";
   const pane: PaneId = current === "dispatch" || current === "history" || current === "monitor" ? current : tab;
   const groups = useMemo<MenuGroup<MenuId>[]>(
     () => [
@@ -285,7 +288,17 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
         ],
       },
       { label: "모니터링", items: [{ id: "monitor", label: "운행 현황", icon: "truck" }] },
-      ...(canDecide ? [{ label: "계정", items: [{ id: "approvals" as const, label: "승인", icon: "user-check" as const }] }] : []),
+      ...(canDecide
+        ? [
+            {
+              label: "계정",
+              items: [
+                { id: "approvals" as const, label: "승인", icon: "user-check" as const },
+                { id: "centers" as const, label: "센터", icon: "building" as const },
+              ],
+            },
+          ]
+        : []),
     ],
     [canDecide],
   );
@@ -516,8 +529,13 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
       return driver === undefined ? null : driverDetail(driver, centerName);
     }
     const row = zoneRows.find(item => item.id === id);
-    return row === undefined ? null : zoneDetail(row);
-  }, [pickedUnits, pickedOrder, unitRows, dispatchMode, driverIds, assignment, assignedRows, clearPicks, pane, plan, sequence, savedRun, orderById, historyRoute, runActions, pickedLive, sentId, selection, orderRows, driverRows, drivers.items, zoneRows, flyTo, centerName, canEditAddress, afterAddressSaved]);
+    if (row === undefined) return null;
+    const onZoneChanged = (): void => {
+      liveDrivers.reload();
+      liveZones.reload();
+    };
+    return zoneDetail(row, canEditAddress && centerId !== undefined ? { drivers: driverIds, onChanged: onZoneChanged } : undefined);
+  }, [pickedUnits, pickedOrder, unitRows, dispatchMode, driverIds, assignment, assignedRows, clearPicks, pane, plan, sequence, savedRun, orderById, historyRoute, runActions, pickedLive, sentId, selection, orderRows, driverRows, drivers.items, zoneRows, flyTo, centerName, canEditAddress, afterAddressSaved, liveDrivers, liveZones, centerId]);
 
   // Each pane draws only its own things: orders draws every order, drivers and dispatch the orders in assigned
   // zones (one driver's when one is picked), zones only the zone squares and their numbers.
@@ -671,7 +689,7 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
   );
 
   return (
-    <div class="workspace" data-detail={current !== "approvals" && (editingZones ? zoneEditor.detail : detail) !== null}>
+    <div class="workspace" data-detail={!onPage && (editingZones ? zoneEditor.detail : detail) !== null}>
       <MenuRail groups={groups} active={current} onChange={setMenu} />
       <aside class="plot" aria-label="작업 목록" ref={plotRef}>
         <header class="plot-header">
@@ -709,7 +727,7 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
               onCancel={() => setAsking(false)}
             />
           )}
-          {current !== "approvals" && (
+          {!onPage && (
             <>
               <CenterSelect centers={centers} selectedId={center.selectedId} onSelect={center.select} />
               <DayPicker day={day} onChange={setDay} />
@@ -717,7 +735,16 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
             </>
           )}
         </header>
-        {current === "approvals" ? (
+        {current === "centers" ? (
+          <section class="menu-page" aria-labelledby="centers-title">
+            <header class="menu-page-head">
+              <h2 id="centers-title">센터</h2>
+            </header>
+            <div class="menu-page-body">
+              <CentersView resource={centers} onChanged={liveCenters.reload} />
+            </div>
+          </section>
+        ) : current === "approvals" ? (
           <section class="menu-page" aria-labelledby="approvals-title">
             <header class="menu-page-head">
               <h2 id="approvals-title">승인</h2>
@@ -772,6 +799,7 @@ function Workspace({ me, account, onSignOut }: { me: MeResult; account: Account;
         />
         <div class="tabpanels">
           <div class="tabpanel" role="tabpanel" id="plot-panel-drivers" aria-labelledby="plot-tab-drivers" hidden={tab !== "drivers"}>
+            {canEditAddress && centerId !== undefined && <DriverAdd centerId={centerId} onDone={liveDrivers.reload} />}
             <DriversView resource={driverList} selectedId={selection.drivers} onSelect={id => select("drivers", id)} scope={centerName} />
           </div>
           <div class="tabpanel" role="tabpanel" id="plot-panel-orders" aria-labelledby="plot-tab-orders" hidden={tab !== "orders"}>

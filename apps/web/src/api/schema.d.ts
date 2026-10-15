@@ -31,7 +31,11 @@ export interface paths {
         /** List drivers (배송원) */
         get: operations["listDrivers"];
         put?: never;
-        post?: never;
+        /**
+         * Register a driver of a center (administrator or owner)
+         * @description Only the DRIVER ID code is kept, never a name or a phone number.
+         */
+        post: operations["createDriver"];
         delete?: never;
         options?: never;
         head?: never;
@@ -181,6 +185,26 @@ export interface paths {
         put?: never;
         /** Make a zone, or a 세부권역 of a zone (administrator or owner) */
         post: operations["createZone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/zones/{id}/driver": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the driver who serves a zone (administrator or owner)
+         * @description The driver becomes the zone's only 담당 기사, and takes the zone as main zone when the driver has none. A null driverId leaves the zone without one. A zone of a center the person does not have answers 404.
+         */
+        put: operations["putZoneDriver"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -867,6 +891,27 @@ export interface paths {
         /** List the centers the signed-in account can use */
         get: operations["listCenters"];
         put?: never;
+        /**
+         * Make a center (owner only)
+         * @description The owner sees it at once and gives it to people when approving them.
+         */
+        post: operations["createCenter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/centers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Change a center's name and depot address (owner only) */
+        put: operations["updateCenter"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1348,6 +1393,54 @@ export interface operations {
             403: components["responses"]["NoAccess"];
         };
     };
+    createDriver: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    centerId: string;
+                    driverId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The driver as registered. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        centerId: string;
+                        driverId: string;
+                    };
+                };
+            };
+            /** @description A code that is not 1..30 letters, digits, - or _. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["NotSignedIn"];
+            403: components["responses"]["NoAccess"];
+            /** @description The center already has this driver. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listOrders: {
         parameters: {
             query?: {
@@ -1678,6 +1771,53 @@ export interface operations {
             403: components["responses"]["NoAccess"];
             /** @description The center already has a zone with this name. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putZoneDriver: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description DRIVER ID code of the zone's center. */
+                    driverId?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The zone. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Zone"];
+                };
+            };
+            /** @description The center has no driver with this code. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["NotSignedIn"];
+            403: components["responses"]["NoAccess"];
+            /** @description No zone with this ID in the person's centers. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3433,6 +3573,104 @@ export interface operations {
             };
             401: components["responses"]["NotSignedIn"];
             403: components["responses"]["NoAccess"];
+        };
+    };
+    createCenter: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description LOCATION NAME code, such as KRSNA. Stored in capitals. */
+                    id?: string;
+                    name: string;
+                    /** @description Korean address of the depot; routes start there. */
+                    depotAddress?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The new center. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Center"];
+                };
+            };
+            /** @description A code that is not 3..12 letters or digits, or no name. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["NotSignedIn"];
+            403: components["responses"]["NoAccess"];
+            /** @description The code is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateCenter: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description LOCATION NAME code, such as KRSNA. Stored in capitals. */
+                    id?: string;
+                    name: string;
+                    /** @description Korean address of the depot; routes start there. */
+                    depotAddress?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The center as changed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Center"];
+                };
+            };
+            /** @description No name, or a value too long. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["NotSignedIn"];
+            403: components["responses"]["NoAccess"];
+            /** @description No such center. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
 }

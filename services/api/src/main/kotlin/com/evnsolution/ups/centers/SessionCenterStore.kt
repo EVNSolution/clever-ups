@@ -9,15 +9,18 @@ import org.springframework.web.context.request.ServletRequestAttributes
 
 /**
  * The centers of the person behind the current request: the rows of `account_center` for that account.
- * The owner sees every center that any account has. The name comes from the `center` master when the center is
- * in it, and is the code otherwise.
+ * The owner sees every center that any account has, and every center of the `center` master. The name comes from
+ * the `center` master when the center is in it, and is the code otherwise.
  */
 class SessionCenterStore(private val jdbc: JdbcClient) : CenterStore {
     override fun findAll(): List<Center> {
         val request = (RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes)?.request
         val session = request?.getAttribute(SESSION_ATTRIBUTE) as? SessionInfo ?: return emptyList()
         val codes = if (session.account.role == Role.OWNER) {
-            jdbc.sql("SELECT DISTINCT center_code FROM account_center ORDER BY center_code")
+            // The owner also sees centers made but not yet given to anyone.
+            jdbc.sql(
+                "SELECT center_code FROM account_center UNION SELECT center_code FROM center ORDER BY center_code",
+            )
                 .query(String::class.java).list()
         } else {
             jdbc.sql("SELECT center_code FROM account_center WHERE account_id = :id ORDER BY center_code")
