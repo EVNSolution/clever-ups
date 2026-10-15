@@ -7,9 +7,11 @@ Parameters:
   GitHubOidcProviderArn:
     Type: String
     Description: The account's existing token.actions.githubusercontent.com provider.
-  Repository:
+  RepositorySubject:
     Type: String
-    Default: EVNSolution/clever-ups
+    # GitHub's immutable subject: owner and repository with their numeric IDs. A repository deleted and made
+    # again under the same name gets a new ID, so it cannot take these roles.
+    Default: repo:EVNSolution@267003080/clever-ups@1420359746
   InstanceType:
     Type: String
     Default: t4g.large
@@ -194,7 +196,7 @@ Resources:
             Condition:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": sts.amazonaws.com
-                "token.actions.githubusercontent.com:sub": !Sub repo:${Repository}:ref:refs/heads/main
+                "token.actions.githubusercontent.com:sub": !Sub ${RepositorySubject}:ref:refs/heads/main
       Policies:
         - PolicyName: push-images
           PolicyDocument:
@@ -228,7 +230,7 @@ Resources:
             Condition:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": sts.amazonaws.com
-                "token.actions.githubusercontent.com:sub": !Sub repo:${Repository}:environment:production
+                "token.actions.githubusercontent.com:sub": !Sub ${RepositorySubject}:environment:production
       Policies:
         - PolicyName: release-only
           PolicyDocument:
