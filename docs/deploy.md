@@ -40,7 +40,7 @@ EVN-MARKETING의 `ci.yml`·`deploy.yml` 구조를 따릅니다.
    - API 테스트·detekt와 웹 검사(`npm run check`)를 실행합니다.
    - main이면 arm64 러너(`ubuntu-24.04-arm`)에서 이미지를 만듭니다. Public 저장소는 이 러너도 무료입니다.
    - 이미지는 ECR에 digest로 올리고, digest를 산출물로 남깁니다.
-2. 배포(`deploy.yml`): 사람이 `workflow_dispatch`로 실행합니다. 입력은 `release` 또는 `rollback`, main SHA, CI 실행 ID입니다.
+2. 배포(`deploy.yml`): main CI가 모두 통과하면 CI가 바로 호출합니다(승인 대기 없음, 2026-10-15 변경). 되돌리기와 재배포는 사람이 `workflow_dispatch`로 실행합니다.
    - 지금 main인지, CI가 성공했는지, digest가 맞는지 확인합니다.
    - GitHub OIDC로 배포 역할을 받습니다. 장기 키는 쓰지 않습니다.
    - SSM 명령으로 서버에 digest를 넘깁니다.
@@ -50,7 +50,7 @@ EVN-MARKETING의 `ci.yml`·`deploy.yml` 구조를 따릅니다.
 ## Public 저장소 보안
 
 - 배포 역할의 신뢰 조건: 이 저장소, `main` 브랜치, `production` environment만 허용합니다.
-- `production` environment에 승인자를 둡니다. fork의 PR은 비밀값과 OIDC를 받지 못합니다.
+- `production` environment는 main 브랜치만 허용합니다. main은 CI 통과가 필수라, 검사를 통과한 커밋만 배포됩니다. fork의 PR은 비밀값과 OIDC를 받지 못합니다.
 - 워크플로의 외부 액션은 커밋 SHA로 고정합니다.
 - PR 본문·리뷰·이슈도 함께 공개됩니다.
 

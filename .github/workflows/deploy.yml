@@ -1,9 +1,16 @@
-# Activates an image CI already built and tested, or goes back to the previous one. Run by hand, from main,
-# in the production environment (approval required). It rebuilds nothing: it reads CI's receipt for the commit
-# and asks the server, through the one SSM document it may use, to switch to those digests.
+# Activates an image CI already built and tested, or goes back to the previous one. CI calls it after every
+# green main commit with the digests it just pushed; a person runs it by hand to roll back or to release a
+# main commit again from CI's receipt. It rebuilds nothing and asks the server, through the one SSM document
+# it may use, to switch to those digests.
 name: Deploy
 run-name: Deploy ${{ inputs.action }} ${{ inputs.source_sha }}
 on:
+  workflow_call:
+    inputs:
+      action: {type: string, required: true}
+      source_sha: {type: string, required: true}
+      api_digest: {type: string, required: true}
+      web_digest: {type: string, required: true}
   workflow_dispatch:
     inputs:
       action:
@@ -39,11 +46,13 @@ jobs:
       ACTION: ${{ inputs.action }}
       SOURCE_SHA: ${{ inputs.source_sha }}
       CI_RUN_ID: ${{ inputs.ci_run_id }}
+      API_DIGEST: ${{ inputs.api_digest }}
+      WEB_DIGEST: ${{ inputs.web_digest }}
       INSTANCE_ID: ${{ vars.UPS_INSTANCE_ID }}
       AWS_PAGER: ""
     steps:
       - name: Check the commit and its CI run
-        if: inputs.action == 'release'
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'release'
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$CI_RUN_ID" =~ ^[0-9]+$ ]] || { echo "source_sha and ci_run_id are required" >&2; exit 1; }
@@ -59,7 +68,7 @@ jobs:
           for k in ("api", "web"):
               assert re.fullmatch(r"sha256:[0-9a-f]{64}", r[k]), f"bad {k} digest"
           with open(os.environ["GITHUB_ENV"], "a") as env:
-              env.write(f"API_DIGEST={r['api']}\nWEB_DIGEST={r['web']}\n")
+              env.write(f"RECEIPT_API={r['api']}\nRECEIPT_WEB={r['web']}\n")
           PY
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
@@ -70,7 +79,11 @@ jobs:
       - name: Switch the server and wait for its answer
         run: |
           set -euo pipefail
+          # Digests come from the calling CI run, or from CI's receipt when a person releases by hand.
+          API_DIGEST="${API_DIGEST:-${RECEIPT_API:-}}"
+          WEB_DIGEST="${WEB_DIGEST:-${RECEIPT_WEB:-}}"
           if [ "$ACTION" = release ]; then
+            [[ "$API_DIGEST" =~ ^sha256:[0-9a-f]{64}$ && "$WEB_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digests" >&2; exit 1; }
             params="action=release,sourceSha=$SOURCE_SHA,apiDigest=$API_DIGEST,webDigest=$WEB_DIGEST"
           else
             params="action=rollback"
