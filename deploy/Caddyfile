@@ -1,0 +1,54 @@
+# The one public door: HTTPS on the server's IP, the web app, and /api and the health check to the API.
+# UPS_SITE is the address (the Elastic IP, or localhost for a local run). UPS_TLS is "acme" or "internal".
+{
+	admin off
+}
+
+(tls-acme) {
+	tls {
+		# Let's Encrypt gives IP certificates only as 6-day "shortlived" ones. Caddy renews them.
+		issuer acme {
+			profile shortlived
+		}
+	}
+}
+
+(tls-internal) {
+	tls internal
+}
+
+{$UPS_SITE} {
+	import tls-{$UPS_TLS}
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self' https://www.gstatic.com https://www.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.openfreemap.org; font-src 'self' https://tiles.openfreemap.org; connect-src 'self' https://tiles.openfreemap.org https://*.googleapis.com; worker-src 'self' blob:; frame-src https://www.google.com https://*.firebaseapp.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		-Server
+	}
+	# Only the health check of the actuator is public; every other actuator path stays inside.
+	handle /actuator/health {
+		reverse_proxy api:8080
+	}
+	handle /actuator/* {
+		respond 404
+	}
+	handle /api/* {
+		request_body {
+			max_size 12MB
+		}
+		reverse_proxy api:8080
+	}
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+	log {
+		output stdout
+		format json
+	}
+}

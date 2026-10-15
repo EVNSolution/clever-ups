@@ -13,6 +13,9 @@
 !/engines/
 # infra/: run files of third-party services UPS hosts (route engine). Map data under it stays ignored (data/, *.pbf, *.osrm*).
 !/infra/
+!/deploy/
+!/.github/
+!/.dockerignore
 !/scripts/
 !/services/
 !/tests/

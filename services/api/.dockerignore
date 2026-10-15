@@ -1,0 +1,5 @@
+# Build context of deploy/api.Dockerfile: only sources and the Gradle wrapper.
+build
+.gradle
+*.env
+.env*

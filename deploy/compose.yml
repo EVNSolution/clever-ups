@@ -1,0 +1,96 @@
+# UPS on one server. Only Caddy publishes ports (80, 443); the rest talk on the internal network.
+# Variables come from /srv/ups/release.env, written by deploy/host/release.sh: the image digests and the site.
+# Secrets are files under /srv/ups/secrets, fetched from SSM Parameter Store by deploy/host/setup.sh.
+name: ups
+
+services:
+  web:
+    image: ${UPS_WEB_IMAGE:?}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      UPS_SITE: ${UPS_SITE:?}
+      UPS_TLS: ${UPS_TLS:-acme}
+    volumes:
+      # Certificates survive restarts and new images, so Let's Encrypt is not asked again.
+      - /srv/ups/caddy:/data
+    depends_on:
+      - api
+    networks: [edge]
+
+  api:
+    image: ${UPS_API_IMAGE:?}
+    restart: unless-stopped
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      # Caddy terminates HTTPS; the API trusts its X-Forwarded-* headers, and cookies are always Secure.
+      SERVER_FORWARD_HEADERS_STRATEGY: native
+      UPS_SESSION_SECURE_COOKIE: "true"
+      UPS_DB_URL: jdbc:postgresql://postgres:5432/ups
+      UPS_DB_USER: ups
+      UPS_DB_PASSWORD_FILE: /run/ups/db-password
+      UPS_SERVICE_TOKEN_FILE: /run/ups/service-token
+      OURS24_KEY_FILE: /run/ups/ours24-api-key
+      UPS_VWORLD_KEY_FILE: /run/ups/vworld-api-key
+      UPS_DEFAULT_CENTER: ${UPS_DEFAULT_CENTER:-}
+      UPS_VROOM_URL: http://vroom:3000/
+      UPS_PHOTOS_DIR: /data/photos
+      JAVA_TOOL_OPTIONS: -Xss512k
+    volumes:
+      - /srv/ups/secrets/api:/run/ups:ro
+      - /srv/ups/photos:/data/photos
+    mem_limit: 1536m
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    depends_on:
+      - postgres
+      - vroom
+    networks: [edge, inside]
+
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ups
+      POSTGRES_USER: ups
+      POSTGRES_PASSWORD_FILE: /run/ups/db-password
+    volumes:
+      - /srv/ups/pgdata:/var/lib/postgresql/data
+      - /srv/ups/secrets/postgres:/run/ups:ro
+    mem_limit: 1g
+    shm_size: 256m
+    security_opt: ["no-new-privileges:true"]
+    networks: [inside]
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    restart: unless-stopped
+    # The default table limit (100 places) is below one route's 150 stops; VROOM asks OSRM for tables.
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "1000", "--port", "5000", "/data/south-korea-latest.osrm"]
+    volumes:
+      - /srv/ups/route:/data:ro
+    mem_limit: 3g
+    security_opt: ["no-new-privileges:true"]
+    networks: [inside]
+
+  vroom:
+    image: ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08
+    restart: unless-stopped
+    volumes:
+      - /srv/ups/app/infra/route/vroom.yml:/conf/config.yml:ro
+    depends_on:
+      - osrm
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    networks: [inside]
+
+networks:
+  edge: {}
+  inside:
+    internal: true
