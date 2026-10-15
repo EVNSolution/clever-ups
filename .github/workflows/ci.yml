@@ -1,5 +1,5 @@
-# Checks every pull request and main. On main it also builds the two images (arm64, for the t4g server),
-# pushes them to ECR by commit, and leaves their digests as the release receipt the deploy workflow reads.
+# Checks every pull request and main. On main it also builds the two images (arm64, for the t4g server) in
+# parallel jobs, pushes them to ECR by commit, and leaves their digests as the release receipt the deploy workflow reads.
 name: CI
 on:
   pull_request:
@@ -22,6 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+          cache: gradle
       - name: Tests and detekt (H2)
         working-directory: services/api
         run: ./gradlew --no-daemon test detekt
@@ -52,8 +53,8 @@ jobs:
       - name: Host scripts
         run: shellcheck -S warning deploy/host/*.sh infra/route/prepare.sh
 
-  # Starts with the checks, not after them: deploy below waits for both.
-  images:
+  # Both start with the checks, not after them: deploy below waits for all of them.
+  image-api:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'EVNSolution/clever-ups'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -61,8 +62,7 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      api: ${{ steps.api.outputs.digest }}
-      web: ${{ steps.web.outputs.digest }}
+      digest: ${{ steps.build.outputs.digest }}
     env:
       REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com
     steps:
@@ -73,13 +73,13 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/CleverUps-CI
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-          role-session-name: clever-ups-ci-${{ github.run_id }}
+          role-session-name: clever-ups-ci-${{ github.run_id }}-api
           aws-region: ap-northeast-2
       - name: Log in to ECR
         run: aws ecr get-login-password | docker login -u AWS --password-stdin "$REGISTRY"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      # Layer cache in GitHub Actions: unchanged Gradle and npm dependencies are not downloaded again.
-      - id: api
+      # Layer cache in GitHub Actions: unchanged dependencies are not downloaded again.
+      - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: services/api
@@ -89,7 +89,33 @@ jobs:
           tags: ${{ env.REGISTRY }}/clever-ups-api:${{ github.sha }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
-      - id: web
+
+  image-web:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'EVNSolution/clever-ups'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    env:
+      REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/CleverUps-CI
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: clever-ups-ci-${{ github.run_id }}-web
+          aws-region: ap-northeast-2
+      - name: Log in to ECR
+        run: aws ecr get-login-password | docker login -u AWS --password-stdin "$REGISTRY"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      # Layer cache in GitHub Actions: unchanged dependencies are not downloaded again.
+      - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
@@ -99,10 +125,17 @@ jobs:
           tags: ${{ env.REGISTRY }}/clever-ups-web:${{ github.sha }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
+
+  # Runs beside deploy: the receipt is for a later manual release, so deploy does not wait for it.
+  receipt:
+    needs: [image-api, image-web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
       - name: Release receipt
         env:
-          API: ${{ steps.api.outputs.digest }}
-          WEB: ${{ steps.web.outputs.digest }}
+          API: ${{ needs.image-api.outputs.digest }}
+          WEB: ${{ needs.image-web.outputs.digest }}
         run: |
           mkdir -p receipt
           printf '{"sha":"%s","api":"%s","web":"%s"}\n' "$GITHUB_SHA" "$API" "$WEB" | tee receipt/release.json >> "$GITHUB_STEP_SUMMARY"
@@ -114,7 +147,7 @@ jobs:
 
   # A main commit that passed every check goes live at once. Rollback stays a manual Deploy run.
   deploy:
-    needs: [api, web, scripts, images]
+    needs: [api, web, scripts, image-api, image-web]
     permissions:
       contents: read
       actions: read
@@ -123,5 +156,5 @@ jobs:
     with:
       action: release
       source_sha: ${{ github.sha }}
-      api_digest: ${{ needs.images.outputs.api }}
-      web_digest: ${{ needs.images.outputs.web }}
+      api_digest: ${{ needs.image-api.outputs.digest }}
+      web_digest: ${{ needs.image-web.outputs.digest }}
