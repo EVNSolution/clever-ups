@@ -1,0 +1,88 @@
+# Activates an image CI already built and tested, or goes back to the previous one. Run by hand, from main,
+# in the production environment (approval required). It rebuilds nothing: it reads CI's receipt for the commit
+# and asks the server, through the one SSM document it may use, to switch to those digests.
+name: Deploy
+run-name: Deploy ${{ inputs.action }} ${{ inputs.source_sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: release the tested commit, or roll back to the previous release
+        type: choice
+        options: [release, rollback]
+        required: true
+      source_sha:
+        description: The exact current main commit (release only)
+        type: string
+        required: false
+      ci_run_id:
+        description: The successful CI run of that commit on main (release only)
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: clever-ups-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.repository == 'EVNSolution/clever-ups' && github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ACTION: ${{ inputs.action }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      INSTANCE_ID: ${{ vars.UPS_INSTANCE_ID }}
+      AWS_PAGER: ""
+    steps:
+      - name: Check the commit and its CI run
+        if: inputs.action == 'release'
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$CI_RUN_ID" =~ ^[0-9]+$ ]] || { echo "source_sha and ci_run_id are required" >&2; exit 1; }
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" -q .sha)
+          [ "$head" = "$SOURCE_SHA" ] || { echo "source_sha is not the current main ($head)" >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID" -q '[.name, .head_sha, .head_branch, .event, .conclusion] | join(" ")')
+          [ "$run" = "CI $SOURCE_SHA main push success" ] || { echo "CI run does not match: $run" >&2; exit 1; }
+          gh run download "$CI_RUN_ID" -R "$GITHUB_REPOSITORY" -n "release-$SOURCE_SHA" -D receipt
+          python3 - <<'PY'
+          import json, os, re
+          r = json.load(open("receipt/release.json"))
+          assert r["sha"] == os.environ["SOURCE_SHA"], "receipt is for another commit"
+          for k in ("api", "web"):
+              assert re.fullmatch(r"sha256:[0-9a-f]{64}", r[k]), f"bad {k} digest"
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"API_DIGEST={r['api']}\nWEB_DIGEST={r['web']}\n")
+          PY
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/CleverUps-Deploy
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: clever-ups-deploy-${{ github.run_id }}
+          aws-region: ap-northeast-2
+      - name: Switch the server and wait for its answer
+        run: |
+          set -euo pipefail
+          if [ "$ACTION" = release ]; then
+            params="action=release,sourceSha=$SOURCE_SHA,apiDigest=$API_DIGEST,webDigest=$WEB_DIGEST"
+          else
+            params="action=rollback"
+          fi
+          id=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name CleverUps-Release \
+            --parameters "$params" --comment "run $GITHUB_RUN_ID" --query Command.CommandId --output text)
+          for _ in $(seq 1 90); do
+            status=$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 10
+          done
+          aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text | tail -n 30
+          echo "$ACTION: $status" >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" = Success ]

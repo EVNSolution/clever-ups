@@ -1,0 +1,93 @@
+# Checks every pull request and main. On main it also builds the two images (arm64, for the t4g server),
+# pushes them to ECR by commit, and leaves their digests as the release receipt the deploy workflow reads.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Tests and detekt (H2)
+        working-directory: services/api
+        run: ./gradlew --no-daemon test detekt
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+      - name: Typecheck, lint, test, build
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run check
+
+  scripts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Host scripts
+        run: shellcheck -S warning deploy/host/*.sh infra/route/prepare.sh
+
+  images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'EVNSolution/clever-ups'
+    needs: [api, web, scripts]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-northeast-2
+      REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.ap-northeast-2.amazonaws.com
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/CleverUps-CI
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-session-name: clever-ups-ci-${{ github.run_id }}
+          aws-region: ap-northeast-2
+      - name: Build and push by commit
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password | docker login -u AWS --password-stdin "$REGISTRY"
+          docker build -f deploy/api.Dockerfile -t "$REGISTRY/clever-ups-api:$GITHUB_SHA" services/api
+          docker build -f deploy/web.Dockerfile -t "$REGISTRY/clever-ups-web:$GITHUB_SHA" .
+          docker push -q "$REGISTRY/clever-ups-api:$GITHUB_SHA"
+          docker push -q "$REGISTRY/clever-ups-web:$GITHUB_SHA"
+          api=$(aws ecr describe-images --repository-name clever-ups-api --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          web=$(aws ecr describe-images --repository-name clever-ups-web --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          mkdir -p receipt
+          printf '{"sha":"%s","api":"%s","web":"%s"}\n' "$GITHUB_SHA" "$api" "$web" > receipt/release.json
+          cat receipt/release.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ github.sha }}
+          path: receipt/release.json
+          retention-days: 30

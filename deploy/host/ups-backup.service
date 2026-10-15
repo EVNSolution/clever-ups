@@ -1,0 +1,7 @@
+[Unit]
+Description=UPS database backup to S3
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ups-backup nightly

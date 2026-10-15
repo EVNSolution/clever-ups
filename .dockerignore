@@ -1,0 +1,19 @@
+# Only what the images need goes to the build: no secrets, data, builds or agent files.
+**/node_modules
+**/build
+**/.gradle
+**/dist
+secrets
+infra/route/data
+infra/boundaries/data
+docs/references/ours24
+apps/android
+.git
+.claude
+.codex
+.omx
+.agents
+AGENTS.md
+CLAUDE.md
+*.env
+.env*

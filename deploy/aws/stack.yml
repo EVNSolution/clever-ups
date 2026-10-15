@@ -1,0 +1,259 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  UPS (clever-ups) on one EC2 server with a fixed IP: image registries, backup bucket, the server, and the
+  GitHub roles that build (CI) and release (deploy). No SSH; the server is reached through SSM only.
+
+Parameters:
+  GitHubOidcProviderArn:
+    Type: String
+    Description: The account's existing token.actions.githubusercontent.com provider.
+  Repository:
+    Type: String
+    Default: EVNSolution/clever-ups
+  InstanceType:
+    Type: String
+    Default: t4g.large
+  ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+
+Resources:
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: clever-ups-api
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: {ScanOnPush: true}
+      EncryptionConfiguration: {EncryptionType: AES256}
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the last 30 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},"action":{"type":"expire"}}]}'
+
+  WebRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: clever-ups-web
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: {ScanOnPush: true}
+      EncryptionConfiguration: {EncryptionType: AES256}
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the last 30 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":30},"action":{"type":"expire"}}]}'
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+      VersioningConfiguration: {Status: Enabled}
+      LifecycleConfiguration:
+        Rules:
+          - Id: keep-30-days
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration: {NoncurrentDays: 7}
+
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt BackupBucket.Arn, !Sub "${BackupBucket.Arn}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  BackupBucketParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /clever-ups/backup-bucket
+      Type: String
+      Value: !Ref BackupBucket
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: UPS web only (HTTP for the redirect and the certificate check, HTTPS). No SSH.
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: udp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIpv6: "::/0"}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0"}
+        - {IpProtocol: udp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0"}
+
+  ServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ups-server
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: [!GetAtt ApiRepository.Arn, !GetAtt WebRepository.Arn]
+              - Effect: Allow
+                Action: [ssm:GetParameter]
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/clever-ups/*
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${BackupBucket.Arn}/postgres/*"
+
+  ServerProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ServerRole]
+
+  Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ServerProfile
+      SecurityGroupIds: [!GetAtt WebSecurityGroup.GroupId]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 40, VolumeType: gp3, Encrypted: true, DeleteOnTermination: false}
+      Tags:
+        - {Key: Name, Value: clever-ups}
+
+  ServerAddress:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Server
+      Tags:
+        - {Key: Name, Value: clever-ups}
+
+  # The only command the deploy role may run on the server, with its arguments checked by pattern.
+  ReleaseDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: CleverUps-Release
+      DocumentType: Command
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: "2.2"
+        description: Activate a tested UPS release, or go back to the previous one.
+        parameters:
+          action: {type: String, allowedValues: [release, rollback]}
+          sourceSha: {type: String, default: "-", allowedPattern: "^([0-9a-f]{40}|-)$"}
+          apiDigest: {type: String, default: "-", allowedPattern: "^(sha256:[0-9a-f]{64}|-)$"}
+          webDigest: {type: String, default: "-", allowedPattern: "^(sha256:[0-9a-f]{64}|-)$"}
+        mainSteps:
+          - action: aws:runShellScript
+            name: release
+            inputs:
+              timeoutSeconds: "900"
+              runCommand:
+                - |
+                  if [ "{{action}}" = release ]; then
+                    exec /usr/local/bin/ups-release release "{{sourceSha}}" "{{apiDigest}}" "{{webDigest}}"
+                  else
+                    exec /usr/local/bin/ups-release rollback
+                  fi
+
+  CiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CleverUps-CI
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: !Ref GitHubOidcProviderArn}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                "token.actions.githubusercontent.com:sub": !Sub repo:${Repository}:ref:refs/heads/main
+      Policies:
+        - PolicyName: push-images
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                Resource: [!GetAtt ApiRepository.Arn, !GetAtt WebRepository.Arn]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CleverUps-Deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: !Ref GitHubOidcProviderArn}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                "token.actions.githubusercontent.com:sub": !Sub repo:${Repository}:environment:production
+      Policies:
+        - PolicyName: release-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Server}
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/${ReleaseDocument}
+              - Effect: Allow
+                Action: [ssm:GetCommandInvocation, ssm:ListCommandInvocations]
+                Resource: "*"
+              - Effect: Allow
+                Action: ecr:DescribeImages
+                Resource: [!GetAtt ApiRepository.Arn, !GetAtt WebRepository.Arn]
+
+Outputs:
+  ElasticIp:
+    Value: !Ref ServerAddress
+  InstanceId:
+    Value: !Ref Server
+  CiRoleArn:
+    Value: !GetAtt CiRole.Arn
+  DeployRoleArn:
+    Value: !GetAtt DeployRole.Arn
+  BackupBucketName:
+    Value: !Ref BackupBucket
