@@ -29,7 +29,7 @@
   - 저장소·이미지·로그에는 남기지 않습니다.
 - 역할별 권한:
   - CI 역할: main 브랜치에서만 받습니다. 두 ECR 저장소에 이미지를 올릴 수만 있습니다.
-  - 배포 역할: `production` environment(승인 필요)에서만 받습니다. 서버에서 `CleverUps-Release` 문서 하나만 실행할 수 있고, 인자는 패턴으로 검사합니다.
+  - 배포 역할: main 브랜치만 허용한 `production` environment에서만 받습니다. 서버에서 `CleverUps-Release` 문서 하나만 실행할 수 있고, 인자는 패턴으로 검사합니다.
 - PR의 CI는 비밀값과 AWS 권한 없이 돕니다.
 
 ## 처음 한 번
@@ -43,15 +43,16 @@
    aws cloudformation deploy --stack-name clever-ups --template-file deploy/aws/stack.yml --capabilities CAPABILITY_NAMED_IAM --parameter-overrides GitHubOidcProviderArn=<arn>
    ```
 
-3. 저장소 변수 `AWS_ACCOUNT_ID`, `UPS_INSTANCE_ID`를 넣고, environment `production`에 승인자를 둡니다.
+3. 저장소 변수 `AWS_ACCOUNT_ID`, `UPS_INSTANCE_ID`를 넣고, environment `production`은 main 브랜치만 허용합니다.
 4. 서버를 준비합니다. SSM Run Command(`AWS-RunShellScript`)로 main 커밋의 `deploy/host/setup.sh`를 받아 실행합니다(`bash setup.sh <sha>`). 경로 엔진 데이터 준비에 수십 분이 걸립니다.
-5. main의 CI가 성공하면 Actions의 Deploy를 `release`, 커밋 SHA, CI 실행 ID로 실행합니다.
+5. main에 병합하면 CI가 배포까지 합니다.
 6. 행정구역 경계를 넣습니다([infra/boundaries/README.md](../infra/boundaries/README.md)). 서버에서 파일을 받고 SHA-256을 확인한 뒤 실행합니다: `docker compose ... run --rm api --ups.import-boundaries=<파일>`.
 7. 첫 개발 관리자는 운영자가 Session Manager에서 직접 만듭니다(`--ups.bootstrap-owner`). 비밀번호는 그 터미널에서만 입력합니다.
 
 ## 평소
 
-- main에 병합하면 CI가 이미지를 만들어 ECR에 올립니다.
-- Actions → Deploy → `release`를 실행하고 승인합니다. 서버가 새 API의 health를 확인한 뒤 전환합니다. 3분 안에 정상이 아니면 이전 버전으로 돌아갑니다.
-- 문제가 있으면 Deploy → `rollback`을 실행합니다. 직전 버전으로 돌아갑니다.
+- main에 병합하면 끝입니다. CI가 검사와 이미지 빌드를 동시에 하고, 모두 통과하면 그 이미지를 바로 배포합니다.
+- 서버는 새 API의 health를 확인한 뒤 전환합니다. 3분 안에 정상이 아니면 이전 버전으로 돌아갑니다.
+- 이미지 빌드는 GitHub Actions 캐시를 써서 의존성이 그대로면 Gradle·npm 설치를 건너뜁니다.
+- 문제가 있으면 Actions → Deploy → `rollback`을 실행합니다. 직전 버전으로 돌아갑니다. 같은 화면의 `release`(커밋 SHA, CI 실행 ID)로 main 커밋을 다시 배포할 수도 있습니다.
 - 배포 직전과 매일 03:00(한국)에 DB를 S3에 백업합니다.
