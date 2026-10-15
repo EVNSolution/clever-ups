@@ -1,0 +1,2088 @@
+openapi: 3.1.0
+info:
+  title: CLEVER UPS API
+  version: 0.0.1
+  description: >-
+    Web, Android, and API share this contract. Terms follow the UPS center sheet
+    (center, route code, driver) and the Ours24 partner API (Job rows). Fields marked
+    provisional may still change. Two kinds of caller exist and they never share a door: a person signed in
+    on the web (`userSession`) reads data once a membership is active, and a service of ours (`serviceToken`)
+    reads and writes addresses.
+  license:
+    name: Proprietary
+servers:
+  - url: /
+    description: Same origin as the caller; each client sets its own base URL
+paths:
+  /actuator/health:
+    get:
+      operationId: getHealth
+      security: []
+      summary: Report whether the API is running
+      responses:
+        "200":
+          description: The API is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /api/drivers:
+    get:
+      operationId: listDrivers
+      security:
+        - userSession: []
+      parameters:
+        - $ref: "#/components/parameters/CenterId"
+      summary: List drivers (배송원)
+      responses:
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "200":
+          description: All drivers. The list is empty until a data source exists.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Driver"
+  /api/orders:
+    get:
+      operationId: listOrders
+      security:
+        - userSession: []
+      parameters:
+        - $ref: "#/components/parameters/From"
+        - $ref: "#/components/parameters/To"
+        - name: centerId
+          in: query
+          required: false
+          description: Only the orders of this center (its Jobs' center, or the default center for a Job with none).
+          schema: {type: string}
+      summary: List orders (deliveries) of the dates asked for
+      responses:
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "200":
+          description: >-
+            Orders of the dates asked for, one per tracking number (the same file uploaded twice is listed once),
+            from every center unless `centerId` is given. The list is empty until a data source exists.
+            The source may hand over only part of a Job; then X-Data-Incomplete is true.
+          headers:
+            X-Data-Incomplete:
+              description: Present and true when the list may not hold every order the source has.
+              schema:
+                type: string
+                enum: ["true"]
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+        "400":
+          description: A date is not YYYY-MM-DD, or `to` is before `from`.
+        "502":
+          description: The data source (Ours24) failed or refused the request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/addresses:
+    get:
+      operationId: listAddresses
+      security:
+        - serviceToken: []
+      summary: List stored addresses by status, oldest first (for services)
+      description: >-
+        The queue of the service that translates and geocodes addresses is the rows with status PENDING.
+        People do not use this path.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: {$ref: "#/components/schemas/LocationStatus", default: PENDING}
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "200":
+          description: Addresses with the status asked for. Empty until orders have been read with a database connected.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AddressLocation"
+        "400":
+          description: limit is outside 1..500, or status is not a status.
+  /api/addresses/refresh:
+    post:
+      operationId: refreshAddresses
+      security:
+        - serviceToken: []
+      summary: Read the orders of the days and queue their new addresses (for services)
+      description: >-
+        Reads only. The service fills its own queue with this call, so no person has to be signed in.
+        The days go to the order source as given, like `/api/orders`.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: false
+          description: Last day, inclusive. Defaults to `from`.
+          schema: {type: string, format: date}
+      responses:
+        "200":
+          description: The orders were read and their new addresses are queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [orders, incomplete]
+                properties:
+                  orders: {type: integer, description: How many orders were read.}
+                  incomplete: {type: boolean, description: True when the source may hold more orders than were read.}
+        "400":
+          description: A date is not YYYY-MM-DD, or `to` is before `from`.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "502":
+          description: The data source (Ours24) failed or refused the request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/addresses/references:
+    get:
+      operationId: listAddressReferences
+      security:
+        - serviceToken: []
+      summary: Read the reference set of Korean addresses, a page at a time (for services)
+      description: >-
+        For checking a translator: the Korean address that a person or the old system wrote for an address of a
+        past day. It is not a confirmed answer. Page with `after` set to the last key of the previous page.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+        - name: after
+          in: query
+          required: false
+          schema: {type: string, pattern: "^[0-9a-f]{64}$"}
+      responses:
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "200":
+          description: References in key order. Empty until a reference set has been imported.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AddressReference"
+        "400":
+          description: limit is outside 1..500, or after is not an address key.
+  /api/addresses/{key}:
+    put:
+      operationId: putAddressLocation
+      security:
+        - serviceToken: []
+      summary: Write the place of one address (for services)
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: {type: string, pattern: "^[0-9a-f]{64}$"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LocationUpdate"
+      responses:
+        "204":
+          description: Stored.
+        "400":
+          description: >-
+            DONE without lat and lng, lat or lng on a status other than DONE, a value out of range, addressKo
+            without koSource, or detailKo or koSource without addressKo.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "404":
+          description: No address has this key.
+  /api/routes:
+    get:
+      operationId: listRoutes
+      security:
+        - userSession: []
+      parameters:
+        - $ref: "#/components/parameters/CenterId"
+      summary: List route codes (구역코드)
+      responses:
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "200":
+          description: All route codes with their drivers. The list is empty until a data source exists.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Route"
+  /api/boundaries:
+    get:
+      operationId: listBoundaries
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Public administrative boundaries in a box
+      description: >-
+        Level SI is what a person calls a 시 (a 시 with 일반구, or a 시·군·구 without them), for 권역 editing; DONG is
+        a 행정동, for 세부권역 editing. Source: 통계청 SGIS via vuski/admdongkor, CC BY 4.0; a map that shows them
+        must say so. More than 600 in the box sets `X-Data-Incomplete: true` and returns the first 600.
+      parameters:
+        - name: level
+          in: query
+          required: true
+          schema: {type: string, enum: [SI, DONG]}
+        - name: bbox
+          in: query
+          required: true
+          description: west,south,east,north in WGS84 degrees.
+          schema: {type: string}
+      responses:
+        "200":
+          description: Boundaries that touch the box.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Boundary"}
+        "400":
+          description: Unknown level or a bad box.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "503":
+          description: No database is connected.
+  /api/zones:
+    get:
+      operationId: listZones
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Zones (권역) and 세부권역 of a center with their shapes
+      parameters:
+        - name: centerId
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The zones of the center, by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Zone"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "503":
+          description: No database is connected.
+    post:
+      operationId: createZone
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Make a zone, or a 세부권역 of a zone (administrator or owner)
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [centerId, name]
+              properties:
+                centerId: {type: string}
+                name: {type: string, minLength: 1, maxLength: 40}
+                parentId:
+                  type: [string, "null"]
+                  description: A 권역 of the same center. The new zone is then its 세부권역.
+      responses:
+        "200":
+          description: The new zone, without a shape.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Zone"}
+        "400":
+          description: A bad name, or a parent that is not a 권역 of the center.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "409":
+          description: The center already has a zone with this name.
+  /api/zones/{id}/shape:
+    put:
+      operationId: putZoneShape
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Set the shape of a zone (administrator or owner)
+      description: >-
+        The shape is the union of `boundaryCodes`, or `polygon` when no codes are given; neither clears it. The
+        server cuts the shape so it never overlaps another zone of the same center and level, and cuts a 세부권역 to
+        its 권역: the new edge follows the old one. A zone of a center the person does not have answers 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                boundaryCodes:
+                  type: array
+                  items: {type: string}
+                polygon:
+                  description: A GeoJSON Polygon or MultiPolygon in WGS84.
+                  type: [object, "null"]
+      responses:
+        "200":
+          description: The zone with its new shape.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Zone"}
+        "400":
+          description: An unknown boundary code or a polygon that is not GeoJSON.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: No zone with this ID in the person's centers.
+        "409":
+          description: Nothing is left after other zones are cut away, or the parent 권역 has no shape yet.
+  /api/stop-sequence:
+    post:
+      operationId: sequenceStops
+      security:
+        - userSession: []
+      summary: Put one driver's stops in visiting order
+      description: >-
+        Asks the route engine (VROOM on OSRM roads of South Korea) for the order to visit the stops, the arrival at
+        each, and the road line. Without `start` the driver leaves from the first stop of the request. Nothing is saved. Off unless the
+        server has `ups.vroom.url`; then 503.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startAt, stops]
+              properties:
+                startAt: {type: string, format: date-time, description: When the driver leaves.}
+                start:
+                  oneOf:
+                    - $ref: "#/components/schemas/Point"
+                    - type: "null"
+                serviceSeconds: {type: integer, minimum: 0, maximum: 3600, default: 120, description: Time at each stop.}
+                stops:
+                  type: array
+                  minItems: 1
+                  maxItems: 150
+                  items:
+                    type: object
+                    required: [id, lng, lat]
+                    properties:
+                      id: {type: string, description: The caller's ID, unique in the request (an order ID).}
+                      lng: {type: number}
+                      lat: {type: number}
+      responses:
+        "200":
+          description: The stops in visiting order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stops, unassigned, distanceMeters, durationSeconds, geometry]
+                properties:
+                  stops:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, arrival, distanceMeters]
+                      properties:
+                        id: {type: string}
+                        arrival: {type: string, format: date-time}
+                        distanceMeters: {type: integer, description: Road distance driven up to this stop.}
+                  unassigned:
+                    type: array
+                    items: {type: string}
+                    description: Stops the engine could not reach.
+                  distanceMeters: {type: integer}
+                  durationSeconds: {type: integer}
+                  geometry:
+                    type: [string, "null"]
+                    description: The road line as an encoded polyline, precision 5.
+        "400":
+          description: Missing start time, no stops or more than 150, repeated IDs, or a position out of range.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "503":
+          description: The route engine is not set up or did not answer.
+  /api/dispatches:
+    get:
+      operationId: listDispatches
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Saved dispatches of one center and day, newest first
+      parameters:
+        - {name: centerId, in: query, required: true, schema: {type: string}}
+        - {name: day, in: query, required: true, schema: {type: string, format: date}}
+      responses:
+        "200":
+          description: The runs of the day.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/DispatchSummary"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: "Not signed in with an active membership, or the center is not the person's."}
+        "503": {description: The server has no database.}
+    post:
+      operationId: saveDispatch
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Save a dispatch (administrator or owner)
+      description: >-
+        Puts each driver's orders in visiting order with the route engine, from the center's depot (or the first
+        order when the depot has no place), and keeps the result as computed. Orders without a position, and orders
+        the engine cannot reach, are kept as unassigned. A new run of the same center and day marks the earlier
+        DRAFT run REPLACED. Every order must have been read through `GET /api/orders` before.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [centerId, day, departAt, routes]
+              properties:
+                centerId: {type: string}
+                day: {type: string, format: date, description: The operating day.}
+                departAt: {type: string, pattern: "^\\d{2}:\\d{2}$", description: "When drivers leave, Korea time."}
+                routes:
+                  type: array
+                  items:
+                    type: object
+                    required: [driverId, orderIds]
+                    properties:
+                      driverId: {type: string, description: The driver code of the center.}
+                      orderIds: {type: array, items: {type: string}}
+                unassigned:
+                  type: array
+                  items: {type: string}
+                  description: Orders of the run that no driver got.
+      responses:
+        "200":
+          description: Saved as DRAFT.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DispatchSummary"}
+        "400": {description: "Missing day or time, an order given twice or never read, or a driver not of the center."}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: "Not an administrator or owner, or the center is not the person's."}
+        "503": {description: "The server has no database or no route engine, or the engine did not answer."}
+  /api/dispatches/{id}:
+    get:
+      operationId: getDispatch
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: One saved dispatch with its routes as they were computed
+      description: >-
+        Routes come in driver-code order, each with its stops in visiting order. Orders are given by ID only (the
+        order list of the day carries the addresses). An unknown ID and a center the person does not have both
+        answer 404.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DispatchDetail"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404": {description: "No such dispatch, or not of the person's centers."}
+        "503": {description: The server has no database.}
+  /api/dispatches/{id}/send:
+    post:
+      operationId: sendDispatch
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Send a saved dispatch so its routes are the ones drivers get (administrator or owner)
+      description: >-
+        Only a DRAFT can be sent. Only one run per center and day is SENT: a run sent before becomes REPLACED. The routes become SENT. Delivery to the driver app comes with the app.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The run after the change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DispatchDetail"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not an administrator or owner.}
+        "404": {description: "No such dispatch, or not of the person's centers."}
+        "409": {description: "The run is not a DRAFT."}
+        "503": {description: The server has no database.}
+  /api/dispatches/{id}/cancel:
+    post:
+      operationId: cancelDispatch
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Cancel a saved dispatch (administrator or owner)
+      description: >-
+        A DRAFT or a SENT run becomes CANCELLED.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The run after the change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DispatchDetail"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not an administrator or owner.}
+        "404": {description: "No such dispatch, or not of the person's centers."}
+        "409": {description: "The run is already CANCELLED or REPLACED."}
+        "503": {description: The server has no database.}
+  /api/dispatches/{id}/routes/{driverId}/driver:
+    post:
+      operationId: changeRouteDriver
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Give a draft route to another driver of the center (administrator or owner)
+      description: >-
+        The new driver must be of the center and have no route in the run yet (else 400 or 409). The route code becomes the main zone of the new driver; the order of stops is kept.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: driverId, in: path, required: true, schema: {type: string}, description: The route's driver code.}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [driverId]
+              properties:
+                driverId: {type: string, description: The new driver code.}
+      responses:
+        "200":
+          description: The run after the change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DispatchDetail"}
+        "400": {description: Not a driver of this center.}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not an administrator or owner.}
+        "404": {description: "No such dispatch or route, or not of the person's centers."}
+        "409": {description: The run is not a DRAFT.}
+  /api/dispatches/{id}/routes/{driverId}/orders:
+    post:
+      operationId: addRouteOrders
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Add unassigned orders of a draft to a route (administrator or owner)
+      description: >-
+        The orders must be unassigned orders of the run, with a position. The whole route is ordered again by the route engine from its own start and time.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: driverId, in: path, required: true, schema: {type: string}, description: The route's driver code.}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderIds]
+              properties:
+                orderIds: {type: array, minItems: 1, items: {type: string}}
+      responses:
+        "200":
+          description: The run after the change.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DispatchDetail"}
+        "400": {description: "Orders missing, repeated, not unassigned in this run, or without a position."}
+        "503": {description: "The route engine is not set up, or did not answer."}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not an administrator or owner.}
+        "404": {description: "No such dispatch or route, or not of the person's centers."}
+        "409": {description: The run is not a DRAFT.}
+  /api/memberships/{accountId}/driver:
+    post:
+      operationId: linkDriver
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Tie an active account to a driver of a center (owner)
+      description: >-
+        The account's role becomes `driver`, its only center becomes `centerId`, and it is tied to the driver (one
+        account per driver; an earlier tie of either is replaced). Recorded as LINK_DRIVER. The owner's own account
+        cannot be tied.
+      parameters:
+        - {name: accountId, in: path, required: true, schema: {type: string}}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [centerId, driverId]
+              properties:
+                centerId: {type: string}
+                driverId: {type: string, description: The driver code in that center.}
+      responses:
+        "204": {description: Tied.}
+        "400": {description: Not a driver of this center.}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not the owner.}
+        "404": {description: The account has no active membership.}
+        "409": {description: The owner's account.}
+        "503": {description: The server has no database.}
+  /api/driver/route:
+    get:
+      operationId: getDriverRoute
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: The signed-in driver's route of a day (driver app)
+      description: >-
+        From the run SENT for the driver's center and day. Stops come in visiting order with the address and the
+        tracking number; no customer name or phone number. A draft or a cancelled run never reaches here.
+      parameters:
+        - {name: day, in: query, required: false, schema: {type: string, format: date}, description: Today in Korea when left out.}
+      responses:
+        "200":
+          description: The route.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DriverRoute"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not a driver account tied to a driver.}
+        "404": {description: No route was sent for this day.}
+        "503": {description: The server has no database.}
+  /api/driver/codes:
+    get:
+      operationId: listUpsCodes
+      security:
+        - userSession: []
+      summary: The UPS delivery codes (KB and the exceptions)
+      responses:
+        "200":
+          description: From the UPS Codes sheet.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/UpsCode"}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+  /api/driver/route/{planId}/stops/{orderId}/arrive:
+    post:
+      operationId: arriveAtStop
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: The driver arrived at a stop
+      parameters:
+        - {name: planId, in: path, required: true, schema: {type: string}}
+        - {name: orderId, in: path, required: true, schema: {type: string}}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lat: {type: [number, "null"]}
+                lng: {type: [number, "null"]}
+      responses:
+        "204": {description: Kept. A second arrival keeps the first time.}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not a driver account tied to a driver.}
+        "404": {description: Not a stop of the driver's own route in a SENT run.}
+        "503": {description: The server has no database.}
+  /api/driver/route/{planId}/stops/{orderId}/result:
+    post:
+      operationId: reportStop
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Delivered (KB, face to face or at the door) or a UPS exception code
+      description: A later report replaces an earlier one. A face-to-face delivery needs the recipient's name.
+      parameters:
+        - {name: planId, in: path, required: true, schema: {type: string}}
+        - {name: orderId, in: path, required: true, schema: {type: string}}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome]
+              properties:
+                outcome: {type: string, enum: [DELIVERED, EXCEPTION]}
+                code: {type: [string, "null"], description: "A UPS exception code, for EXCEPTION."}
+                density: {type: [string, "null"], enum: [C, R, null]}
+                podMethod: {type: [string, "null"], enum: [FACE, DOOR, null]}
+                recipientName: {type: [string, "null"]}
+                lat: {type: [number, "null"]}
+                lng: {type: [number, "null"]}
+      responses:
+        "204": {description: Kept.}
+        "400": {description: "Unknown outcome, density or code, or a face-to-face delivery without a name."}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not a driver account tied to a driver.}
+        "404": {description: Not a stop of the driver's own route in a SENT run.}
+        "503": {description: The server has no database.}
+  /api/driver/route/{planId}/stops/{orderId}/photos:
+    post:
+      operationId: addStopPhoto
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: A photo at the stop (the body is the JPEG or PNG, up to 5 MB)
+      parameters:
+        - {name: planId, in: path, required: true, schema: {type: string}}
+        - {name: orderId, in: path, required: true, schema: {type: string}}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: {type: string, format: binary}
+          image/png:
+            schema: {type: string, format: binary}
+      responses:
+        "200":
+          description: Kept.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [photoId]
+                properties:
+                  photoId: {type: string}
+        "400": {description: Not a JPEG or PNG, empty, or over 5 MB.}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not a driver account tied to a driver.}
+        "404": {description: Not a stop of the driver's own route in a SENT run.}
+        "503": {description: "The server has no database or no photo folder (ups.photos.dir)."}
+  /api/dispatches/{id}/photos/{photoId}:
+    get:
+      operationId: getStopPhoto
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: A photo a driver took at a stop of the run
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: photoId, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: The photo.
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404": {description: "No such run or photo, or not of the person's centers."}
+  /api/driver/position:
+    post:
+      operationId: reportDriverPosition
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Where the driver's phone is now (driver app, while on screen)
+      description: Only the latest place per driver is kept; `GET /api/drivers` shows it.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lat, lng]
+              properties:
+                lat: {type: number, minimum: -90, maximum: 90}
+                lng: {type: number, minimum: -180, maximum: 180}
+                accuracy: {type: [number, "null"], description: Meters.}
+      responses:
+        "204": {description: Kept.}
+        "400": {description: A position out of range.}
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {description: Not a driver account tied to a driver.}
+        "503": {description: The server has no database.}
+  /api/auth/login:
+    post:
+      operationId: login
+      security: []
+      summary: Sign in with a login ID and a password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [loginId, password]
+              properties:
+                loginId: {type: string}
+                password: {type: string}
+      responses:
+        "200":
+          description: >-
+            Signed in. Two cookies are set: the access token `UPS_SESSION` (minutes) and the refresh token
+            `UPS_REFRESH` (scoped to /api/auth). The CSRF token is in the X-CSRF-Token header.
+          headers:
+            X-CSRF-Token:
+              description: Send this in the X-CSRF-Token header of every POST.
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          description: Wrong ID or wrong password. The two are never told apart.
+        "429":
+          description: Too many wrong passwords for this ID. Retry-After is in seconds.
+          headers:
+            Retry-After:
+              schema: {type: integer}
+  /api/auth/signup:
+    get:
+      operationId: getSignUpOptions
+      x-requires-database: true
+      security: []
+      summary: What the sign-up form must ask for
+      responses:
+        "200":
+          description: Whether a sign-up code is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignUpOptions"
+    post:
+      operationId: signUp
+      security: []
+      summary: Sign up and ask for access in one step
+      description: >-
+        Anyone may sign up. It makes an account with a waiting membership and one access request. It gives no
+        access: the 개발 관리자 decides. The role and the centers come from that decision, never from this body.
+        With phone verification configured the body must carry `phoneProof` for the same number, and the request
+        is stored as phone-verified. Otherwise the number is stored as not verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignUp"
+      responses:
+        "201":
+          description: Created. Sign in next; the account sees no data until it is approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          description: A field is not acceptable. The detail names it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: The login ID is taken, in any letter case.
+        "429":
+          description: Sign-up is closed for the rest of the day (a cap on new requests for everyone).
+  /api/access-requests:
+    get:
+      operationId: listAccessRequests
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: The requests waiting for a decision (개발 관리자 only)
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+      responses:
+        "200":
+          description: Waiting requests, oldest first. Requests past 14 days are expired first and not listed.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccessRequest"
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+    post:
+      operationId: requestAccessAgain
+      security:
+        - userSession: []
+      summary: Ask for access again (a signed-in account without access)
+      description: >-
+        For an account whose membership is none, rejected or revoked. It works without an active membership but
+        still needs the session and the CSRF token. It gives no access: the 개발 관리자 decides. One request waits
+        at a time, and the daily cap on new requests applies.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccessProfile"
+      responses:
+        "201":
+          description: Asked. The account's membership is now pending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          description: A field is not acceptable. The detail names it.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "409":
+          description: A request is already waiting, or the account already has access.
+        "429":
+          description: New requests are closed for the rest of the day.
+  /api/auth/phone:
+    get:
+      operationId: getSignUpPhoneConfig
+      x-requires-database: true
+      security: []
+      summary: Whether sign-up must prove the phone number, and the public web settings for it
+      responses:
+        "200":
+          description: The settings. `apiKey` is the Firebase web API key, which is public by design.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicPhoneConfig"
+  /api/auth/phone/send:
+    post:
+      operationId: sendSignUpPhoneCode
+      x-requires-database: true
+      security: []
+      summary: Text a one-time code to the number a person is about to give at sign-up
+      description: >-
+        Open like sign-up itself, so the brakes are the server ledger (daily cap for everyone, per-number cap,
+        cooldown) and the provider's reCAPTCHA. At most one message per `requestKey`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublicPhoneSendRequest"
+      responses:
+        "200":
+          description: Sent. `reference` is what the browser needs to enter the code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhoneSendResult"
+        "400":
+          description: The number is not a Korean mobile number, the key or challenge is missing, or the sign-up code is not valid.
+        "409":
+          description: This request key was handled before.
+        "429":
+          description: The daily, per-number or cooldown limit. The detail names which.
+        "502":
+          description: The provider refused (nothing sent) or did not answer (may have been sent, counted).
+        "503":
+          description: Phone verification is not configured on this server.
+  /api/phone:
+    get:
+      operationId: getPhoneStatus
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Phone proof of the signed-in account's open request
+      description: >-
+        Works without an active membership. `configured` is false when the server has no Firebase settings;
+        then nothing can be sent. `apiKey` is the Firebase web API key, which is public by design. The full
+        number never leaves the server: only a hint is shown.
+      responses:
+        "200":
+          description: The state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhoneStatus"
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+  /api/phone/send:
+    post:
+      operationId: sendPhoneCode
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Text a one-time code to the number on the open request
+      description: >-
+        The only call that can send a message. The number is the one on the account's own open request; the
+        caller cannot name another. The server reserves in its ledger first (service-wide daily cap, per-account
+        cap, cooldown) and sends at most once per `requestKey`. A timeout counts as sent and is never retried.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PhoneSendRequest"
+      responses:
+        "200":
+          description: Sent. `reference` is what the browser needs to enter the code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhoneSendResult"
+        "400":
+          description: The request key or the challenge is missing.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: There is no open access request.
+        "409":
+          description: This request key was handled before, or the number is already verified.
+        "429":
+          description: The daily, per-account or cooldown limit. The detail names which.
+        "502":
+          description: The provider refused (nothing sent) or did not answer (may have been sent, counted).
+        "503":
+          description: Phone verification is not configured on this server.
+  /api/phone/verify:
+    post:
+      operationId: verifyPhone
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Show the server the Firebase proof that the person holds the number
+      description: >-
+        The ID token that Firebase gave the browser after the code was entered. It must be fresh and must hold
+        the number on the open request. The token is checked and discarded; it is not stored.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PhoneVerifyRequest"
+      responses:
+        "204":
+          description: The open request is marked as phone-verified.
+        "400":
+          description: The proof is not valid, too old, or holds another number.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: There is no open access request.
+        "503":
+          description: Phone verification is not configured on this server.
+  /api/center-invites:
+    post:
+      operationId: createCenterInvite
+      security:
+        - userSession: []
+      summary: Make a center entry code (개발 관리자 only)
+      description: >-
+        One code gives one to ten centers and one role (member or viewer) to the one person who uses it, at
+        sign-up or afterwards. It is used once and is valid for 7 days. The code is returned here and nowhere
+        else; only its hash is kept. A code never gives admin or owner.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCenterInvite"
+      responses:
+        "201":
+          description: The code, shown once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatedCenterInvite"
+        "400":
+          description: A center code is malformed, there are none or more than ten, or the role is not member or viewer.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+  /api/center-invites/redeem:
+    post:
+      operationId: redeemCenterInvite
+      security:
+        - userSession: []
+      summary: Enter a center entry code (any signed-in account)
+      description: >-
+        Adds the centers of the code to the account. An account without access becomes active with the role of
+        the code; an account with access keeps its role. Works without an active membership, but needs the
+        session and the CSRF token. Five wrong codes in 15 minutes lock it for the rest of the window.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RedeemCenterInvite"
+      responses:
+        "200":
+          description: Added. `role` is the role given, or null when the account kept its own.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RedeemedCenterInvite"
+        "400":
+          description: The code is not valid. Wrong, used and expired codes are not told apart.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "409":
+          description: The owner cannot use a code.
+        "429":
+          description: Too many wrong codes. `Retry-After` says how long.
+  /api/address-ko/{key}:
+    put:
+      operationId: putAddressKo
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Type the Korean address of an address (administrator or owner)
+      description: >-
+        Saves the text as the Korean address with source MANUAL, clears the detail part, and asks V-World for the
+        place at once when the server has a key (`ups.vworld.key-file`). A place found is written as DONE. When none
+        is found the address is PENDING without a place, so a later geocoding run tries again. Only the address text
+        leaves the server. Roles member and viewer get 403.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: {type: string, pattern: "^[0-9a-f]{64}$"}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [addressKo]
+              properties:
+                addressKo: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        "200":
+          description: Saved. `placed` says whether a position was found and written.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [placed]
+                properties:
+                  placed: {type: boolean}
+                  reason:
+                    type: [string, "null"]
+                    enum: [NOT_FOUND, OUTSIDE_KOREA, UNAVAILABLE, null]
+                    description: Why there is no place. Null when placed.
+        "400":
+          description: The key or the text is not valid.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: No address has this key.
+  /api/orders/edits:
+    put:
+      operationId: putOrderEdits
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: Save cells a person changed in the order table of one day (administrator or owner)
+      description: >-
+        Ours24 is not written. The API keeps only the changed cells and shows them over the Ours24 row in
+        `GET /api/orders`, which lists them in `edited`. An empty or null value gives the cell back to Ours24.
+        Edited customerName and companyName are deleted 90 days after `day`. Every order must be one the API has
+        listed, of a center the person has; otherwise 404. Roles member and viewer get 403.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [day, edits]
+              properties:
+                day: {type: string, format: date, description: The operating day of the table.}
+                edits:
+                  type: array
+                  minItems: 1
+                  maxItems: 5000
+                  items:
+                    type: object
+                    required: [orderId, field]
+                    properties:
+                      orderId: {type: string}
+                      field: {type: string, enum: [customerName, companyName, address1, address2, postalCode]}
+                      value: {type: [string, "null"], maxLength: 200}
+      responses:
+        "204":
+          description: Saved.
+        "400":
+          description: No day, no edits, an unknown field or a value too long.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: An order the API has not listed, or of a center the person does not have.
+        "503":
+          description: No database is connected.
+  /api/memberships:
+    get:
+      operationId: listMemberships
+      x-requires-database: true
+      security:
+        - userSession: []
+      summary: The accounts with an active membership, with their centers (개발 관리자 only)
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 500, default: 200}
+      responses:
+        "200":
+          description: Active members by login ID.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Member"
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+  /api/access-requests/{id}/approve:
+    post:
+      operationId: approveAccessRequest
+      security:
+        - userSession: []
+      summary: Approve a request and give a role and centers (개발 관리자 only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  description: admin, member or viewer. `owner` cannot be given by approval.
+                  enum: [admin, member, viewer]
+                centerCodes:
+                  type: array
+                  description: Defaults to the center the person asked for.
+                  items: {type: string}
+      responses:
+        "204":
+          description: Approved. The data opens at the person's next request.
+        "400":
+          description: The role is not known, or a center code is not acceptable.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: No such request.
+        "409":
+          description: Already decided, or past its 14 days.
+  /api/access-requests/{id}/reject:
+    post:
+      operationId: rejectAccessRequest
+      security:
+        - userSession: []
+      summary: Reject a request (개발 관리자 only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        "204":
+          description: Rejected.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: No such request.
+        "409":
+          description: Already decided, or past its 14 days.
+  /api/memberships/{accountId}/revoke:
+    post:
+      operationId: revokeMembership
+      security:
+        - userSession: []
+      summary: End an active membership (개발 관리자 only)
+      description: The owner cannot be revoked here, and nobody revokes their own membership.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        "204":
+          description: Revoked. The data closes at the account's next request.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "404":
+          description: The account has no active membership.
+  /api/auth/refresh:
+    post:
+      operationId: refreshSession
+      security: []
+      summary: Trade the refresh token for a new access token and a new refresh token
+      description: >-
+        The page calls this when an API call answered 401, then repeats the call. It needs the `UPS_REFRESH`
+        cookie and the `X-UPS-Refresh` header (any value; a cross-site form cannot set it). The old refresh
+        token stops working at once. A refresh token that was already replaced and comes back later ends the
+        whole session.
+      parameters:
+        - name: X-UPS-Refresh
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        "204":
+          description: New cookies are set and the new CSRF token is in the X-CSRF-Token header.
+          headers:
+            X-CSRF-Token:
+              schema: {type: string}
+        "401":
+          description: >-
+            No valid refresh token: unknown, expired, replaced, revoked, or the account is disabled. Both
+            cookies are cleared. The person signs in again.
+  /api/auth/logout:
+    post:
+      operationId: logout
+      security:
+        - userSession: []
+      summary: End the session
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: {type: string}
+      responses:
+        "204":
+          description: The session is ended and the cookie is cleared.
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+  /api/me:
+    get:
+      operationId: getMe
+      security:
+        - userSession: []
+      summary: Get the signed-in account
+      responses:
+        "200":
+          description: >-
+            The signed-in account, also one that cannot see data yet (read `membership`).
+          headers:
+            X-CSRF-Token:
+              description: The token this session needs for POST.
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "401":
+          description: Not signed in. Also returned while no account source is connected.
+  /api/centers:
+    get:
+      operationId: listCenters
+      security:
+        - userSession: []
+      summary: List the centers the signed-in account can use
+      responses:
+        "401": {$ref: "#/components/responses/NotSignedIn"}
+        "403": {$ref: "#/components/responses/NoAccess"}
+        "200":
+          description: One account can use several centers, whatever its role. The list is empty until a data source exists.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Center"
+components:
+  securitySchemes:
+    userSession:
+      type: apiKey
+      in: cookie
+      name: UPS_SESSION
+      description: >-
+        A person's access token, sent in a cookie. It lives minutes. The server keeps the session and can end it
+        at any time. HttpOnly, SameSite=Strict. Every POST must also send the X-CSRF-Token that login, refresh
+        or GET /api/me returned. The refresh token is a second cookie, `UPS_REFRESH`, that only /api/auth/* gets.
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: >-
+        A service of ours. The token is a secret file on the server (`ups.service-token-file`); it never
+        goes to a browser and never appears in a log or a commit.
+  responses:
+    NoAccess:
+      description: >-
+        Signed in, but the data is closed to this account. The `detail` of the problem is the reason:
+        membership-none, membership-pending, membership-rejected, membership-revoked, or csrf (a POST
+        without the session's X-CSRF-Token).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotSignedIn:
+      description: The caller is not signed in (person) or sent no valid token (service).
+  parameters:
+    CenterId:
+      name: centerId
+      in: query
+      required: false
+      description: Only items of this center. When omitted, items of every center the account can use.
+      schema: {type: string}
+    From:
+      name: from
+      in: query
+      required: false
+      description: First day to read, YYYY-MM-DD. Defaults to today in Korea time.
+      schema: {type: string, format: date}
+    To:
+      name: to
+      in: query
+      required: false
+      description: >-
+        Last day to read, YYYY-MM-DD, inclusive. Defaults to `from`.
+        This API applies no length limit; the source may refuse a long range.
+      schema: {type: string, format: date}
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [UP]
+    Driver:
+      type: object
+      description: >-
+        A delivery driver (배송원). The ID is the DRIVER ID code and is shown as the driver's name.
+        Its format differs by center, so it must not be parsed. Provisional.
+      required: [id, centerId]
+      properties:
+        id: {type: string}
+        centerId:
+          type: string
+          description: ID of the center the driver belongs to.
+        routeCode:
+          type: [string, "null"]
+          description: ROUTE ID of the driver. Null until one is assigned. Several drivers may share one code.
+        lng: {type: [number, "null"]}
+        lat: {type: [number, "null"]}
+        positionAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the position was recorded, not when it was fetched.
+        zones:
+          type: array
+          items: {type: string}
+          description: The zones the driver serves, the main zone first.
+    Order:
+      type: object
+      description: >-
+        One delivery, from a row of an Ours24 Job. It has no position until the address is refined,
+        Its center is the default center for now. Provisional.
+      required: [id, trackingNumber]
+      properties:
+        id:
+          type: string
+          description: Opaque ID made by this API.
+        trackingNumber: {type: string}
+        customerName: {type: [string, "null"]}
+        companyName: {type: [string, "null"]}
+        address1: {type: [string, "null"]}
+        address2: {type: [string, "null"]}
+        postalCode:
+          type: [string, "null"]
+          description: A string, because it can start with 0.
+        status:
+          type: [string, "null"]
+          description: Row status in Ours24, such as PENDING.
+        jobId:
+          type: [string, "null"]
+          description: The Ours24 Job (upload batch) the row came from.
+        lng: {type: [number, "null"]}
+        lat: {type: [number, "null"]}
+        addressKo:
+          type: [string, "null"]
+          description: The Korean form of the address, once a service has written it. Null until then.
+        detailKo:
+          type: [string, "null"]
+          description: The unit or building part of the Korean address, when there is one.
+        centerCode:
+          type: [string, "null"]
+          description: >-
+            The center the order belongs to. The server's default center until the split of the shared
+            feed is decided; null when no default center is set.
+        addressKey:
+          type: [string, "null"]
+          description: >-
+            Key of the stored address of this order, for `PUT /api/address-ko/{key}`. Null when the order has no
+            address line or no database is connected.
+        edited:
+          type: array
+          items: {type: string, enum: [customerName, companyName, address1, address2, postalCode]}
+          description: Fields a person corrected over the Ours24 row (`PUT /api/orders/edits`). Empty when none.
+    GeoJsonGeometry:
+      type: object
+      description: A GeoJSON Polygon or MultiPolygon in WGS84 longitude and latitude.
+      required: [type, coordinates]
+      properties:
+        type: {type: string, enum: [Polygon, MultiPolygon]}
+        coordinates: {type: array}
+    Boundary:
+      type: object
+      required: [code, level, name, shape]
+      properties:
+        code: {type: string, description: "행안부 10 digits for a 행정동, 5 digits for a 시·군·구 or 시."}
+        level: {type: string, enum: [CITY, SGG, DONG]}
+        name: {type: string}
+        parentCode: {type: [string, "null"]}
+        shape: {$ref: "#/components/schemas/GeoJsonGeometry"}
+    Zone:
+      type: object
+      description: A zone (권역) of a center. A zone with `parentId` is a 세부권역 inside that zone.
+      required: [id, centerId, name]
+      properties:
+        id: {type: string}
+        centerId: {type: string}
+        name: {type: string}
+        parentId: {type: [string, "null"]}
+        shape:
+          oneOf:
+            - {$ref: "#/components/schemas/GeoJsonGeometry"}
+            - {type: "null"}
+    Route:
+      type: object
+      description: >-
+        A route code (구역코드, ROUTE ID) of one center, with the drivers that use it.
+        A code is unique only inside a center, and several drivers may share it. Provisional.
+      required: [id, centerId, code, driverIds]
+      properties:
+        id: {type: string}
+        centerId: {type: string}
+        code:
+          type: string
+          description: ROUTE ID. A string, because of leading zeros and letters.
+        driverIds:
+          type: array
+          items: {type: string}
+    Problem:
+      type: object
+      description: Error body (RFC 9457).
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        instance: {type: string}
+    Account:
+      type: object
+      description: >-
+        The signed-in person. The login ID is shown as the nickname. Access to centers is a separate list
+        (GET /api/centers), not part of the role. An account can sign in and still see no data:
+        `membership` says why, and only `active` opens the data endpoints.
+      required: [id, loginId, role, membership]
+      properties:
+        id:
+          type: string
+          description: Immutable public ID of the account.
+        loginId: {type: string}
+        role:
+          type: [string, "null"]
+          description: >-
+            Role at the UPS organization, named as in the HQ identity contract. Null until a membership is active.
+            `driver` is an account tied to one driver; it reaches only the paths under /api/driver and /api/me.
+          enum: [owner, admin, member, viewer, driver, null]
+        membership:
+          type: string
+          description: none (no request yet), pending, active, rejected, revoked.
+          enum: [none, pending, active, rejected, revoked]
+    DeliveryResult:
+      type: object
+      description: What the driver reported at a stop.
+      required: [arrivedAt, completedAt, outcome, code, density, podMethod, recipientName, photoIds]
+      properties:
+        arrivedAt: {type: [string, "null"], format: date-time}
+        completedAt: {type: [string, "null"], format: date-time}
+        outcome: {type: [string, "null"], enum: [DELIVERED, EXCEPTION, null]}
+        code: {type: [string, "null"], description: "KB when delivered, else a UPS exception code."}
+        density: {type: [string, "null"], enum: [C, R, null]}
+        podMethod: {type: [string, "null"], enum: [FACE, DOOR, null]}
+        recipientName: {type: [string, "null"], description: "Typed by the driver for a face-to-face delivery."}
+        photoIds: {type: array, items: {type: string}}
+    UpsCode:
+      type: object
+      required: [code, category, short, korean]
+      properties:
+        code: {type: string}
+        category: {type: string}
+        short: {type: string}
+        korean: {type: [string, "null"]}
+    DriverRoute:
+      type: object
+      required: [planId, day, driverId, routeCode, departAt, start, distanceMeters, durationSeconds, geometry, stops]
+      properties:
+        planId: {type: string}
+        day: {type: string, format: date}
+        driverId: {type: string}
+        routeCode: {type: [string, "null"]}
+        departAt: {type: string, format: date-time}
+        start:
+          oneOf:
+            - $ref: "#/components/schemas/Point"
+            - type: "null"
+        distanceMeters: {type: integer}
+        durationSeconds: {type: integer}
+        geometry: {type: [string, "null"]}
+        stops:
+          type: array
+          items:
+            type: object
+            required: [orderId, seq, arrival, distanceMeters, trackingNumber, addressKo, detailKo, address1, address2, postalCode, lng, lat]
+            properties:
+              result:
+                oneOf:
+                  - $ref: "#/components/schemas/DeliveryResult"
+                  - type: "null"
+              orderId: {type: string}
+              seq: {type: integer}
+              arrival: {type: string, format: date-time}
+              distanceMeters: {type: integer}
+              trackingNumber: {type: string}
+              addressKo: {type: [string, "null"]}
+              detailKo: {type: [string, "null"]}
+              address1: {type: string}
+              address2: {type: string}
+              postalCode: {type: string}
+              lng: {type: [number, "null"]}
+              lat: {type: [number, "null"]}
+    DispatchDetail:
+      type: object
+      required: [summary, routes, unassigned]
+      properties:
+        summary: {$ref: "#/components/schemas/DispatchSummary"}
+        routes:
+          type: array
+          items:
+            type: object
+            required: [driverId, routeCode, status, departAt, start, distanceMeters, durationSeconds, geometry, stops]
+            properties:
+              driverId: {type: string, description: The driver code.}
+              routeCode: {type: [string, "null"], description: "Representative zone code, reported as `loop`."}
+              status: {type: string, enum: [PLANNED, SENT, RUNNING, DONE]}
+              departAt: {type: string, format: date-time}
+              start:
+                oneOf:
+                  - $ref: "#/components/schemas/Point"
+                  - type: "null"
+              distanceMeters: {type: integer}
+              durationSeconds: {type: integer}
+              geometry: {type: [string, "null"], description: "Road line, encoded polyline, precision 5."}
+              stops:
+                type: array
+                items:
+                  type: object
+                  required: [orderId, seq, arrival, distanceMeters]
+                  properties:
+                    result:
+                      oneOf:
+                        - $ref: "#/components/schemas/DeliveryResult"
+                        - type: "null"
+                    orderId: {type: string}
+                    seq: {type: integer}
+                    arrival: {type: string, format: date-time}
+                    distanceMeters: {type: integer}
+        unassigned:
+          type: array
+          items: {type: string}
+          description: Orders of the run no driver got.
+    DispatchSummary:
+      type: object
+      required: [id, centerId, day, method, status, departAt, createdAt, routes, stops, unassigned]
+      properties:
+        id: {type: string}
+        centerId: {type: string}
+        day: {type: string, format: date}
+        method: {type: string, enum: [ZONE]}
+        status:
+          type: string
+          enum: [DRAFT, SENT, CANCELLED, REPLACED]
+          description: DRAFT when saved. A new run of the same day replaces a DRAFT. SENT comes with route sending.
+        departAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+        routes: {type: integer, description: Drivers with a route.}
+        stops: {type: integer, description: Every order of the run.}
+        unassigned: {type: integer, description: Orders no driver got.}
+    Point:
+      type: object
+      required: [lng, lat]
+      properties:
+        lng: {type: number}
+        lat: {type: number}
+    Center:
+      type: object
+      description: >-
+        A UPS delivery center (영업소). The ID is the LOCATION NAME code that goes into reports
+        as `location`, such as KRHWN. Provisional.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: LOCATION NAME code.
+        name:
+          type: string
+          description: Center name, such as 화성영업소.
+        address: {type: [string, "null"]}
+        slicCode:
+          type: [string, "null"]
+          description: SLIC CODE. A string, because it can start with 0.
+        lng:
+          type: [number, "null"]
+          description: Depot position, placed from `address` with V-World. Null when the server has no key or no place is found.
+        lat:
+          type: [number, "null"]
+    LocationStatus:
+      type: string
+      enum: [PENDING, DONE, FAILED]
+      description: >-
+        PENDING waits for a service. DONE has a position. FAILED means a service could not find one,
+        and a person should look at it.
+    AddressLocation:
+      type: object
+      required: [key, address1, address2, postalCode, companyName, status, updatedAt]
+      properties:
+        key:
+          type: string
+          description: SHA-256 hex of the normalized address. The same address in many Jobs is one key.
+        address1: {type: string}
+        address2: {type: string}
+        postalCode: {type: string}
+        companyName: {type: string}
+        addressKo: {type: [string, "null"]}
+        lat: {type: [number, "null"]}
+        lng: {type: [number, "null"]}
+        status: {$ref: "#/components/schemas/LocationStatus"}
+        updatedAt: {type: string, format: date-time}
+        detailKo:
+          type: [string, "null"]
+          description: The unit or building part of the Korean address.
+        koSource:
+          oneOf:
+            - {$ref: "#/components/schemas/KoSource"}
+            - {type: "null"}
+        verifyStatus: {$ref: "#/components/schemas/VerifyStatus"}
+    KoSource:
+      type: string
+      enum: [TRANSLATOR, REFERENCE, MANUAL]
+      description: Who made the Korean form of the address.
+    VerifyStatus:
+      type: string
+      enum: [UNVERIFIED, MATCH, MISMATCH, NO_REFERENCE]
+      description: The result of checking the Korean form against the reference set.
+    AddressReference:
+      type: object
+      description: >-
+        A Korean address taken from the Fleetune upload file of an earlier day. It is a reference to check
+        against, not a confirmed answer.
+      required: [key, addressKo]
+      properties:
+        key: {type: string}
+        addressKo: {type: string}
+        detailKo: {type: [string, "null"]}
+    LocationUpdate:
+      type: object
+      required: [status]
+      properties:
+        status: {$ref: "#/components/schemas/LocationStatus"}
+        addressKo: {type: [string, "null"]}
+        lat: {type: [number, "null"], minimum: -90, maximum: 90}
+        lng: {type: [number, "null"], minimum: -180, maximum: 180}
+        detailKo:
+          type: [string, "null"]
+          description: The unit or building part of the Korean address. Needs addressKo.
+        koSource:
+          oneOf:
+            - {$ref: "#/components/schemas/KoSource"}
+            - {type: "null"}
+          description: Required with addressKo.
+        verifyStatus:
+          oneOf:
+            - {$ref: "#/components/schemas/VerifyStatus"}
+            - {type: "null"}
+          description: Omit to leave the stored value as it is.
+    SignUp:
+      type: object
+      required: [loginId, password, fullName, phone]
+      properties:
+        loginId:
+          type: string
+          description: 4 to 32 letters, digits, dots, dashes or underscores. Case does not matter.
+        password:
+          type: string
+          description: 8 to 128 characters with an upper-case letter, a digit and a special character.
+        fullName: {type: string, description: 1 to 50 characters.}
+        centerCode:
+          type: string
+          description: The center the person works at, such as KRHWN. A request, not a grant.
+        driverId: {type: string}
+        inviteCode:
+          type: string
+          description: >-
+            The sign-up code given by the 개발 관리자. Required while `GET /api/auth/signup` says so. With a
+            valid code the account is active at once with the role and centers of the code.
+        phoneProof:
+          type: string
+          description: >-
+            The Firebase ID token after the code was typed. Required when the server has phone verification
+            configured (GET /api/auth/phone says so); checked and discarded, never stored.
+        phone:
+          type: string
+          description: A Korean mobile number, such as 010-1234-5678. Stored as +821012345678.
+        termsAccepted: {type: boolean, description: Not asked while no terms text exists. Accepted and ignored.}
+    AccessRequest:
+      type: object
+      required: [requestId, accountId, loginId, phoneVerified, status, createdAt, expiresAt]
+      properties:
+        requestId: {type: string}
+        accountId: {type: string}
+        loginId: {type: string}
+        fullName: {type: [string, "null"]}
+        centerCode: {type: [string, "null"]}
+        driverId: {type: [string, "null"]}
+        phone: {type: [string, "null"]}
+        phoneVerified: {type: boolean}
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED, EXPIRED]
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+    CreateCenterInvite:
+      type: object
+      required: [centerCodes, role]
+      properties:
+        centerCodes:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: {type: string, description: "2 to 20 letters, digits, dashes or underscores, such as KRSNA."}
+        role: {type: string, enum: [member, viewer]}
+    CreatedCenterInvite:
+      type: object
+      required: [code, centerCodes, role, expiresAt]
+      properties:
+        code: {type: string, description: Shown once, as XXXX-XXXX-XXXX.}
+        centerCodes:
+          type: array
+          items: {type: string}
+        role: {type: string}
+        expiresAt: {type: string, format: date-time}
+    RedeemCenterInvite:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string}
+    RedeemedCenterInvite:
+      type: object
+      required: [centerCodes]
+      properties:
+        centerCodes:
+          type: array
+          items: {type: string}
+        role: {type: [string, "null"]}
+    PublicPhoneConfig:
+      type: object
+      required: [configured]
+      properties:
+        configured: {type: boolean}
+        projectId: {type: [string, "null"]}
+        apiKey: {type: [string, "null"]}
+    SignUpOptions:
+      type: object
+      required: [codeRequired]
+      properties:
+        codeRequired: {type: boolean}
+    PublicPhoneSendRequest:
+      type: object
+      required: [phone, requestKey, challenge]
+      properties:
+        inviteCode:
+          type: string
+          description: Required while sign-up needs a code. No message is sent for a missing or wrong code.
+        phone: {type: string, description: A Korean mobile number, with or without hyphens.}
+        requestKey: {type: string, maxLength: 64}
+        challenge: {type: string, description: The reCAPTCHA token the browser got for this send.}
+    PhoneStatus:
+      type: object
+      required: [configured, verified]
+      properties:
+        configured: {type: boolean}
+        verified: {type: boolean}
+        phoneHint: {type: [string, "null"], description: "For example 010-****-5678."}
+        projectId: {type: [string, "null"]}
+        apiKey: {type: [string, "null"], description: The Firebase web API key (public by design).}
+    PhoneSendRequest:
+      type: object
+      required: [requestKey, challenge]
+      properties:
+        requestKey: {type: string, maxLength: 64, description: One id per person action; a repeat never sends again.}
+        challenge: {type: string, description: The reCAPTCHA token the browser got for this send.}
+    PhoneSendResult:
+      type: object
+      required: [reference]
+      properties:
+        reference: {type: string}
+    PhoneVerifyRequest:
+      type: object
+      required: [idToken]
+      properties:
+        idToken: {type: string}
+    AccessProfile:
+      type: object
+      required: [fullName, phone]
+      properties:
+        fullName: {type: string, description: 1 to 50 characters.}
+        centerCode: {type: string, description: "Not asked by the web any more. Optional; a request, not a grant."}
+        driverId: {type: string, description: Not asked by the web any more. Optional.}
+        phone: {type: string, description: A Korean mobile number, such as 010-1234-5678.}
+        termsAccepted: {type: boolean, description: Not asked while no terms text exists. Accepted and ignored.}
+    Member:
+      type: object
+      required: [accountId, loginId, status, centerCodes]
+      properties:
+        accountId: {type: string}
+        loginId: {type: string}
+        role: {type: [string, "null"]}
+        status: {type: string}
+        centerCodes:
+          type: array
+          items: {type: string}
+        decidedAt: {type: [string, "null"], format: date-time}
+        driverId: {type: [string, "null"], description: "The driver code, for a driver account."}

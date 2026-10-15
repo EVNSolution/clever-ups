@@ -1,0 +1,8 @@
+# The owner reviews every change to the shape of an engine, the contract and the schema.
+/engines/README.md                 @OziinG
+/engines/*/README.md               @OziinG
+/engines/*/evidence/README.md      @OziinG
+/tests/test_engine_layout.py       @OziinG
+/contract/                         @OziinG
+/services/api/src/main/resources/db/migration/  @OziinG
+/.gitignore                        @OziinG

@@ -1,0 +1,7 @@
+extends:
+  - recommended
+rules:
+  # The health check has no client error case.
+  operation-4xx-response: off
+  # Private project: no public license URL or SPDX identifier.
+  info-license-strict: off

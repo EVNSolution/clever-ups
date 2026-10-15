@@ -1,0 +1,24 @@
+# Route engine for UPS: OSRM (roads of South Korea) behind VROOM (stop order).
+# Local only: both ports bind to 127.0.0.1. Prepare the road data first with ./prepare.sh.
+name: ups-route
+
+services:
+  osrm:
+    image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:v5.27.1}
+    # The default table limit (100 places) is below one route's 150 stops; VROOM asks OSRM for tables.
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "1000", "--port", "5000", "/data/south-korea-latest.osrm"]
+    ports:
+      - "127.0.0.1:5005:5000"
+    volumes:
+      - ./data:/data:ro
+    restart: unless-stopped
+
+  vroom:
+    image: ${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}
+    depends_on:
+      - osrm
+    ports:
+      - "127.0.0.1:3005:3000"
+    volumes:
+      - ./vroom.yml:/conf/config.yml:ro
+    restart: unless-stopped

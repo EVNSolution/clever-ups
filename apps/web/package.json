@@ -1,0 +1,33 @@
+{
+  "name": "@ups/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "build": "vite build",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "lint": "oxlint --config .oxlintrc.json .",
+    "prepare": "npm install --prefix ../../tools/oxlint/anti-slop",
+    "gen:api": "npx --yes openapi-typescript@7.13.0 ../../contract/openapi.yaml -o src/api/schema.d.ts",
+    "check:api": "npm run gen:api && git diff --exit-code -- src/api/schema.d.ts",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/geojson": "7946.0.16",
+    "oxlint": "1.86.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.2"
+  },
+  "dependencies": {
+    "firebase": "12.19.0",
+    "lucide-preact": "1.48.0",
+    "maplibre-gl": "6.13.0",
+    "preact": "10.29.8"
+  }
+}

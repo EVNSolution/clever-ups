@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The camera writes the door photo here, in the app's cache; the app sends it and deletes it. -->
+<paths>
+    <cache-path name="photos" path="photos/" />
+</paths>

@@ -1,0 +1,288 @@
+/* Workspace: Plot | Detail | Map. Detail pushes the map on wide screens and overlays it on narrow ones. */
+#app,
+.workspace {
+  height: 100dvh;
+}
+
+.workspace {
+  --rail-now: 0px;
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.workspace:has(.rail[data-open="true"]) {
+  --rail-now: var(--rail-open-w);
+}
+
+.workspace:has(.rail[data-open="false"]) {
+  --rail-now: var(--rail-w);
+}
+
+.plot {
+  width: var(--plot-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--canvas);
+  border-right: 1px solid var(--hairline);
+}
+
+/* Top left: who is working, and in which center. The popover of the center list opens over the tabs. */
+.plot-header {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.tabpanels {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabpanel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.detail {
+  width: 0;
+  flex: none;
+  overflow: hidden;
+  background: var(--canvas);
+  border-right: 1px solid transparent;
+  transition: width var(--dur) var(--ease);
+}
+
+.detail[data-open="true"] {
+  width: var(--detail-w);
+  border-right-color: var(--hairline);
+}
+
+.detail-inner {
+  width: var(--detail-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+}
+
+@media (max-width: 1439px) {
+  .detail {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--rail-now) + var(--plot-w));
+  }
+
+  .detail[data-open="true"] {
+    box-shadow: var(--shadow-panel);
+  }
+
+  .workspace[data-detail="true"] .maplibregl-ctrl-top-left {
+    margin-left: var(--detail-w);
+  }
+}
+
+@media (max-width: 1099px) {
+  :root {
+    --plot-w: 288px;
+    --detail-w: 320px;
+  }
+}
+
+@media (max-width: 759px) {
+  .workspace {
+    flex-direction: column;
+  }
+
+  .map-area {
+    order: 1;
+    flex: none;
+    height: 42dvh;
+  }
+
+  .plot {
+    order: 2;
+    width: 100%;
+    flex: 1;
+    border-right: 0;
+    border-top: 1px solid var(--hairline);
+  }
+
+  .detail {
+    top: 42dvh;
+    left: 0;
+    right: 0;
+  }
+
+  .detail[data-open="true"] {
+    width: 100%;
+  }
+
+  .detail-inner {
+    width: 100%;
+  }
+
+  .workspace[data-detail="true"] .maplibregl-ctrl-top-left {
+    margin-left: 0;
+  }
+}
+
+/* A page of the rail other than prep: takes the place of the tabs in the sidebar. */
+.menu-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-page-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4) var(--sp-2);
+}
+
+.menu-page-head h2 {
+  font-size: var(--fs-lg, 16px);
+  font-weight: 600;
+}
+
+.menu-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Rail: the far-left menu. Folded it shows icons only, so the map keeps its width. */
+.rail {
+  width: var(--rail-open-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-2);
+  background: var(--canvas-soft);
+  border-right: 1px solid var(--hairline);
+  overflow-y: auto;
+}
+
+.rail[data-open="false"] {
+  width: var(--rail-w);
+  padding-inline: var(--sp-1);
+}
+
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-group-label {
+  padding: 0 var(--sp-2) var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.rail-item:hover {
+  background: var(--field);
+  color: var(--ink);
+}
+
+.rail-item[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.rail-toggle {
+  margin-top: auto;
+}
+
+.rail[data-open="false"] .rail-item {
+  justify-content: center;
+  padding: 0;
+}
+
+.rail[data-open="false"] .rail-item-label,
+.rail[data-open="false"] .rail-group-label {
+  display: none;
+}
+
+/* Folded, a hairline marks where one group ends and the next begins. */
+.rail[data-open="false"] .rail-group + .rail-group {
+  border-top: 1px solid var(--hairline);
+  padding-top: var(--sp-3);
+}
+
+@media (max-width: 759px) {
+  .rail,
+  .rail[data-open="false"] {
+    order: 2;
+    width: 100%;
+    flex-direction: row;
+    padding: var(--sp-1) var(--sp-2);
+    border-right: 0;
+    border-top: 1px solid var(--hairline);
+    overflow-x: auto;
+  }
+
+  .rail-group {
+    flex-direction: row;
+  }
+
+  .rail[data-open] .rail-group + .rail-group {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .rail-group-label,
+  .rail-toggle {
+    display: none;
+  }
+
+  .plot {
+    order: 3;
+  }
+}

@@ -1,0 +1,155 @@
+# ── Allowlist: only these root entries can be added ─────────
+# Everything else at the root is ignored, so a stray file or folder cannot be committed by accident.
+# This stops accidents only. `git add -f` and edits to files that are already tracked still work;
+# review (CODEOWNERS, branch protection) is what stops those.
+# To open a new root entry, add its line here in the same change and say why in the commit.
+/*
+!/.gitignore
+!/README.md
+!/DESIGN.md
+!/apps/
+!/contract/
+!/docs/
+!/engines/
+# infra/: run files of third-party services UPS hosts (route engine). Map data under it stays ignored (data/, *.pbf, *.osrm*).
+!/infra/
+!/scripts/
+!/services/
+!/tests/
+!/tools/
+
+# ── OS / editor ─────────────────────────────────────────────
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# ── Secrets and credentials (never commit) ──────────────────
+secrets/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+*.p8
+*.tfvars
+!*.tfvars.example
+*-api-key
+*.secret
+*.secrets
+credentials*.json
+service-account*.json
+google-services.json
+GoogleService-Info.plist
+local.properties
+application-local.*
+application-secret*.*
+
+# ── Agent files (private: not published) ────────────────────
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.codex/
+.omx/
+.agents/
+.runtime/
+.archives/
+
+# ── Build outputs and dependencies ──────────────────────────
+node_modules/
+dist/
+build/
+out/
+coverage/
+.cache/
+.gradle/
+.kotlin/
+*.class
+*.jar
+!**/gradle/wrapper/gradle-wrapper.jar
+*.war
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.tsbuildinfo
+
+# ── Android / iOS (iOS reserved) ────────────────────────────
+*.apk
+*.aab
+.externalNativeBuild/
+.cxx/
+xcuserdata/
+DerivedData/
+Pods/
+
+# ── Logs, temp, local state ─────────────────────────────────
+*.log
+*.tmp
+.worktrees/
+worktrees/
+uploads/
+
+# ── Customer data, DB dumps, large map data (never commit) ──
+private/
+data/
+*.sqlite*
+*.db
+*.dump
+*.sql.gz
+*.xlsx
+*.xls
+*.pbf
+*.pmtiles
+*.mbtiles
+*.osrm*
+
+# ── Data and address results (never commit) ─────────────────
+# Geocoding output, order exports and address lists hold customer addresses.
+*.csv
+*.tsv
+*.ndjson
+*.jsonl
+*.geojson
+*.parquet
+*.xlsm
+*.ods
+*.numbers
+*.bak
+*.orig
+*.rej
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.har
+*.pcap
+
+# ── Engines: model weights and run output stay local ────────
+engines/**/*.pt
+engines/**/*.pth
+engines/**/*.onnx
+engines/**/*.safetensors
+engines/**/*.gguf
+engines/**/*.ckpt
+engines/**/*.h5
+engines/**/*.pkl
+engines/**/*.joblib
+engines/**/*.npy
+engines/**/*.npz
+engines/*/evidence/*
+!engines/*/evidence/README.md
+
+
+# Partner API documents are not published (2026-10-15). Keep local copies here.
+/docs/references/ours24/

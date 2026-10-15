@@ -1,0 +1,15 @@
+# Edited by the engine developer. Keep keys that exist; add keys under [params].
+[engine]
+name = "address"
+version = "0.0.0"
+# The one command that starts a run, from the repository root.
+command = ""
+
+[api]
+# Environment variable names. Values are never written here.
+base_url_env = "UPS_API_BASE_URL"
+token_file_env = "UPS_SERVICE_TOKEN_FILE"
+
+[params]
+batch_size = 100
+max_concurrency = 3
