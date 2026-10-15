@@ -635,6 +635,34 @@ class AccessFlowTest(
     }
 
     @Test
+    fun `only the owner makes centers, which then show for the owner, and administrators register drivers`() {
+        val code = "Z" + UUID.randomUUID().toString().replace("-", "").take(8).uppercase()
+        val body = """{"id":"${code.lowercase()}","name":"테스트 센터","depotAddress":"경기도 성남시 분당구 1"}"""
+        val admin = signedUpAndApproved("admin")
+        assertEquals(403, send(admin, "POST", "/api/centers", body).response.status)
+        assertEquals(200, send(owner, "POST", "/api/centers", body).response.status)
+        assertEquals(409, send(owner, "POST", "/api/centers", body).response.status)
+        assertEquals(400, send(owner, "POST", "/api/centers", """{"id":"x","name":""}""").response.status)
+        mockMvc.get("/api/centers") { cookie(owner.cookie) }
+            .andExpect { jsonPath("$[?(@.id == '$code')]") { exists() } }
+        val renamed = """{"name":"새 이름","depotAddress":""}"""
+        assertEquals(200, send(owner, "PUT", "/api/centers/$code", renamed).response.status)
+        assertEquals(404, send(owner, "PUT", "/api/centers/NOPE404", renamed).response.status)
+        // The admin has KRHWN only: a driver goes there, not into the new center.
+        taskOf("KRHWN")
+        val driver = unique("D")
+        val add = { center: String, id: String ->
+            send(admin, "POST", "/api/drivers", """{"centerId":"$center","driverId":"$id"}""").response.status
+        }
+        assertEquals(200, add("krhwn", driver))
+        assertEquals(409, add("KRHWN", driver))
+        assertEquals(403, add(code, driver))
+        assertEquals(400, add("KRHWN", "a b"))
+        jdbc.sql("DELETE FROM driver WHERE driver_code = :d").param("d", driver).update()
+        jdbc.sql("DELETE FROM center WHERE center_code = :c").param("c", code).update()
+    }
+
+    @Test
     fun `the owner cannot use a code`() {
         assertEquals(409, redeem(owner, newInvite()).response.status)
     }

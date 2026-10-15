@@ -1740,3 +1740,26 @@
   font-size: var(--fs-sm);
   cursor: pointer;
 }
+
+/* Registering a driver above the driver list */
+.driver-add {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0 var(--sp-4) var(--sp-2);
+}
+
+.driver-add .route-edit-row {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.driver-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The owner's center page */
+.centers-page {
+  padding: 0 var(--sp-4) var(--sp-4);
+  gap: var(--sp-4);
+}

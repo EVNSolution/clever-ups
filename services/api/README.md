@@ -109,6 +109,13 @@ Ours24는 영문 주소만 주고 좌표를 주지 않습니다. 주소 번역�
 - 출처·라이선스·받는 방법은 [infra/boundaries/README.md](../../infra/boundaries/README.md)에 있습니다.
 - `GET /api/boundaries?level=SI|DONG&bbox=서,남,동,북`: 상자에 걸친 경계. SI는 일반구가 있는 시와 일반구가 아닌 시·군·구입니다. 600개가 넘으면 `X-Data-Incomplete`.
 
+## 센터·기사·담당 권역
+
+- `POST /api/centers`(개발 관리자): 코드(LOCATION NAME, 대문자 3~12자)·이름·차고지 주소로 센터를 만듭니다. 같은 코드는 409. `PUT /api/centers/{id}`로 이름·차고지 주소를 고칩니다.
+- 개발 관리자의 센터 목록에는 `center` 마스터의 모든 센터가 들어갑니다. 다른 사람에게는 승인 때 센터를 줍니다.
+- `POST /api/drivers`(관리자·개발 관리자, 자기 센터): 기사 ID(DRIVER ID)만 받습니다. 이름·전화번호는 저장하지 않습니다.
+- `PUT /api/zones/{id}/driver`: 권역의 담당 기사를 한 명으로 정하거나(`driverId`) 비웁니다(null). 그 기사에게 메인 권역이 없으면 이 권역이 메인 권역이 됩니다. 날짜별 변경은 배차에서 합니다.
+
 ## 권역 도형
 
 - `zone`(V5)에 상위 권역(`parent_zone_id`)과 도형·범위 상자(V19)를 더했습니다. 상위가 있는 권역이 세부권역입니다.

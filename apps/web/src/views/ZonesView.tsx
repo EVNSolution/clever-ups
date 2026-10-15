@@ -1,5 +1,7 @@
 import type { JSX } from "preact";
-import { useMemo } from "preact/hooks";
+import { useMemo, useState } from "preact/hooks";
+import { describeError } from "../api/http";
+import { refusalText, setZoneDriver } from "../api/masters";
 import { DefinitionList, Section, type DetailContent } from "../detail/DetailPanel";
 import type { Resource } from "../state/useResource";
 import { Badge, IconButton, Notice } from "../ui/Controls";
@@ -88,7 +90,50 @@ export function ZonesView(props: {
   );
 }
 
-export function zoneDetail(row: ZoneRow): DetailContent {
+/** Picks the zone's 담당 기사 among the center's drivers, or none. */
+function ZoneDriverPick(props: { row: ZoneRow; drivers: readonly string[]; onChanged: () => void }): JSX.Element {
+  const [choice, setChoice] = useState(props.row.driverId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      const outcome = await setZoneDriver(props.row.zoneId, choice === "" ? null : choice);
+      if (outcome.kind === "refused") setProblem(refusalText(outcome.status, ""));
+      else props.onChanged();
+    } catch (error) {
+      setProblem(describeError(error).cause);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div class="route-edit">
+      <label class="route-edit-row">
+        <span>담당 기사</span>
+        <select class="text-input" value={choice} onChange={event => setChoice(event.currentTarget.value)}>
+          <option value="">없음</option>
+          {props.drivers.map(id => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button type="button" class="btn btn-primary" disabled={busy} onClick={() => void save()}>
+        지정
+      </button>
+      {problem !== null && <Notice tone="danger" icon="alert" role="alert" title={problem} />}
+    </div>
+  );
+}
+
+/** [assign] is set for an administrator or the owner: the center's drivers and what to do after a change. */
+export function zoneDetail(
+  row: ZoneRow,
+  assign?: { drivers: readonly string[]; onChanged: () => void },
+): DetailContent {
   return {
     title: row.id,
     icon: "map",
@@ -109,8 +154,17 @@ export function zoneDetail(row: ZoneRow): DetailContent {
             권역 편집에서 경계를 정해야 주문이 이 권역에 들어옵니다.
           </Notice>
         )}
+        {assign !== undefined && (
+          <Section title="담당 기사 지정">
+            {assign.drivers.length === 0 ? (
+              <p class="dispatch-basis">이 센터에 기사가 없습니다. 기사 탭에서 먼저 추가하세요.</p>
+            ) : (
+              <ZoneDriverPick key={`${row.zoneId}:${row.driverId ?? ""}`} row={row} drivers={assign.drivers} onChanged={assign.onChanged} />
+            )}
+          </Section>
+        )}
         <Notice icon="info" title="담당 기사">
-          기사의 담당 권역(메인 권역 우선)입니다. 세부권역에 담당 기사가 없으면 상위 권역의 기사를 따릅니다.
+          기사의 담당 권역(메인 권역 우선)입니다. 세부권역에 담당 기사가 없으면 상위 권역의 기사를 따릅니다. 날짜별 변경은 배차에서 합니다.
         </Notice>
       </>
     ),
